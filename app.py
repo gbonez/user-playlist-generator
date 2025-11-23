@@ -248,17 +248,24 @@ def get_playlists():
 @app.route('/api/run_script', methods=['POST'])
 def run_script():
     """Start the lite script for the user"""
+    print("[DEBUG] run_script endpoint called")
+    
     # Get token from Authorization header (for token-based auth)
     auth_header = request.headers.get('Authorization')
     token_info = None
     
+    print(f"[DEBUG] Authorization header present: {bool(auth_header)}")
+    
     if auth_header and auth_header.startswith('Bearer '):
         access_token = auth_header.split(' ')[1]
         token_info = {'access_token': access_token}
+        print(f"[DEBUG] Using Bearer token: {access_token[:20]}...")
     elif 'token_info' in session:
         token_info = session['token_info']
+        print("[DEBUG] Using session token")
     
     if not token_info:
+        print("[DEBUG] No token found, returning 401")
         return jsonify({'error': 'Not authenticated'}), 401
     
     data = request.get_json()
@@ -375,7 +382,10 @@ def run_script():
         })
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Exception in run_script: {error_details}")
+        return jsonify({'error': str(e), 'details': error_details}), 500
 
 @app.route('/api/job_status/<job_id>')
 def get_job_status(job_id):
