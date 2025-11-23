@@ -42,10 +42,19 @@ app = Flask(__name__)
 app.secret_key = config.get('FLASK_SECRET_KEY') or secrets.token_hex(16)
 
 # Enable CORS for frontend on GitHub Pages
-FRONTEND_URL = config.get('FRONTEND_URL', 'https://gbonez.org')
+# Check if running locally
+import socket
+def is_local_environment():
+    return os.environ.get('FLASK_ENV') == 'development' or os.environ.get('PORT') is None
+
+FRONTEND_URL = config.get('FRONTEND_URL')
+if not FRONTEND_URL:
+    # Auto-detect: use localhost for local dev, GitHub Pages for production
+    FRONTEND_URL = 'http://localhost:8000' if is_local_environment() else 'https://gbonez.github.io/user-playlist-generator'
+
 CORS(app, 
      supports_credentials=True, 
-     origins=[FRONTEND_URL, "http://localhost:*"],
+     origins=[FRONTEND_URL, "http://localhost:*", "https://gbonez.github.io"],
      allow_headers=["Content-Type"],
      methods=["GET", "POST", "OPTIONS"],
      expose_headers=["Set-Cookie"])
@@ -54,8 +63,8 @@ CORS(app,
 SPOTIFY_CLIENT_ID = config.get('SPOTIFY_CLIENT_ID')
 SPOTIFY_CLIENT_SECRET = config.get('SPOTIFY_CLIENT_SECRET')
 BASE_URL = config.get('BASE_URL', 'https://release-radar-scripts-production.up.railway.app')
-# OAuth callback redirects back to GitHub Pages
-SPOTIFY_REDIRECT_URI = f"{FRONTEND_URL}/callback"
+# OAuth callback redirects back to frontend
+SPOTIFY_REDIRECT_URI = f"{FRONTEND_URL}/callback.html"
 
 # Set environment variables for the lite script to use
 if config.get('LASTFM_API_KEY'):
@@ -132,20 +141,20 @@ def callback():
     
     if error:
         # Redirect to frontend with error
-        return redirect(f"{FRONTEND_URL}/login?error={error}")
+        return redirect(f"{FRONTEND_URL}/login.html?error={error}")
     
     if not code:
-        return redirect(f"{FRONTEND_URL}/login?error=no_code")
+        return redirect(f"{FRONTEND_URL}/login.html?error=no_code")
     
     try:
         token_info = sp_oauth.get_access_token(code)
         session['token_info'] = token_info
         
         # Redirect back to frontend dashboard
-        return redirect(f"{FRONTEND_URL}/dashboard")
+        return redirect(f"{FRONTEND_URL}/dashboard.html")
     except Exception as e:
         print(f"OAuth error: {e}")
-        return redirect(f"{FRONTEND_URL}/login?error=auth_failed")
+        return redirect(f"{FRONTEND_URL}/login.html?error=auth_failed")
 
 @app.route('/api/logout')
 def logout():
