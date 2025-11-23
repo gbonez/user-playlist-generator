@@ -98,7 +98,7 @@ def safe_spotify_call(func, *args, **kwargs):
     print(f"[FAIL] {getattr(func,'__name__',str(func))} failed after {retries} retries")
     return None
 
-def get_random_track_from_playlist(sp, playlist_id, excluded_artist=None, max_followers=None, source_desc="", artists_data=None, existing_artist_ids=None):
+def get_random_track_from_playlist(sp, playlist_id, excluded_artist=None, max_followers=None, source_desc="", artists_data=None, existing_artist_ids=None, liked_songs_artist_ids=None):
     consecutive_invalid = 0
     for attempt in range(1, 21):
         try:
@@ -127,7 +127,7 @@ def get_random_track_from_playlist(sp, playlist_id, excluded_artist=None, max_fo
                 continue
 
             # Validate track (simplified validation without DB checks)
-            if validate_track_lite(track, artists_data, existing_artist_ids, max_followers, sp):
+            if validate_track_lite(track, artists_data, existing_artist_ids, max_followers, sp, liked_songs_artist_ids):
                 print(f"[SUCCESS] Found valid track from {source_desc}: {track['name']} by {track['artists'][0]['name']}")
                 return track
             else:
@@ -143,9 +143,10 @@ def get_random_track_from_playlist(sp, playlist_id, excluded_artist=None, max_fo
 
     return None
 
-def validate_track_lite(track, artists_data, existing_artist_ids=None, max_followers=None, sp=None):
+def validate_track_lite(track, artists_data, existing_artist_ids=None, max_followers=None, sp=None, liked_songs_artist_ids=None):
     """
     Simplified validation without database checks
+    Now includes check against user's liked songs artists
     """
     if not track or "artists" not in track or not track["artists"]:
         return False
@@ -154,17 +155,22 @@ def validate_track_lite(track, artists_data, existing_artist_ids=None, max_follo
     aid = artist.get("id")
     name_lower = (artist.get("name") or "").lower()
 
-    # 1. Check against local artists.json if provided
+    # 1. Check if artist appears in user's liked songs (NEW CHECK)
+    if liked_songs_artist_ids and aid in liked_songs_artist_ids:
+        print(f"[SKIP] Artist '{artist.get('name')}' appears in liked songs - skipping")
+        return False
+
+    # 2. Check against local artists.json if provided
     if artists_data:
         artist_entry = artists_data.get(aid)
         if artist_entry and int(artist_entry.get("total_liked", 0)) >= 3:
             return False
 
-    # 2. Already in playlist
+    # 3. Already in playlist
     if existing_artist_ids and (aid in existing_artist_ids):
         return False
 
-    # 3. Max followers check
+    # 4. Max followers check
     if max_followers and sp:
         try:
             artist_data = safe_spotify_call(sp.artist, aid)
@@ -214,7 +220,7 @@ def scrape_artist_playlists(artist_id_or_url):
     
     return playlists
 
-def select_track_for_artist_lite(sp, artist_name, artists_data, existing_artist_ids):
+def select_track_for_artist_lite(sp, artist_name, artists_data, existing_artist_ids, liked_songs_artist_ids=None):
     """
     Simplified track selection without database operations
     """
@@ -241,7 +247,8 @@ def select_track_for_artist_lite(sp, artist_name, artists_data, existing_artist_
                 max_followers=None,
                 source_desc=f"artist playlist {pl['id'][:10]}...",
                 artists_data=artists_data,
-                existing_artist_ids=existing_artist_ids
+                existing_artist_ids=existing_artist_ids,
+                liked_songs_artist_ids=liked_songs_artist_ids
             )
             if track:
                 return track
@@ -293,7 +300,8 @@ def select_track_for_artist_lite(sp, artist_name, artists_data, existing_artist_
                     max_followers=None, 
                     source_desc=f"user playlist {pid[:10]}...",
                     artists_data=artists_data,
-                    existing_artist_ids=existing_artist_ids
+                    existing_artist_ids=existing_artist_ids,
+                    liked_songs_artist_ids=liked_songs_artist_ids
                 )
                 if track:
                     return track
@@ -322,7 +330,7 @@ def select_track_for_artist_lite(sp, artist_name, artists_data, existing_artist_
                 for sim_artist in similar_artists[:3]:  # Reduced for lite version
                     sim_name = sim_artist.get("name", "").strip()
                     if sim_name:
-                        track = select_track_for_artist_lite(sp, sim_name, artists_data, existing_artist_ids)
+                        track = select_track_for_artist_lite(sp, sim_name, artists_data, existing_artist_ids, liked_songs_artist_ids)
                         if track:
                             return track
         except Exception as e:
@@ -498,6 +506,49 @@ def build_existing_artist_ids(tracks):
                     ids.add(artist["id"])
     return ids
 
+def fetch_liked_songs_artist_ids(sp):
+    """
+    Fetch all artist IDs from user's liked songs
+    Returns a set of artist IDs to exclude from recommendations
+    """
+    print("[INFO] Fetching user's liked songs to build exclusion list...")
+    liked_artist_ids = set()
+    
+    try:
+        offset = 0
+        limit = 50
+        
+        while True:
+            results = safe_spotify_call(sp.current_user_saved_tracks, limit=limit, offset=offset)
+            if not results or not results.get("items"):
+                break
+            
+            for item in results["items"]:
+                track = item.get("track")
+                if track and "artists" in track:
+                    for artist in track["artists"]:
+                        artist_id = artist.get("id")
+                        if artist_id:
+                            liked_artist_ids.add(artist_id)
+            
+            # Check if we've reached the end
+            if len(results["items"]) < limit:
+                break
+            
+            offset += limit
+            
+            # Add a small delay to avoid rate limiting
+            if offset % 500 == 0:
+                print(f"[INFO] Fetched {offset} liked songs so far...")
+                time.sleep(0.5)
+        
+        print(f"[INFO] Found {len(liked_artist_ids)} unique artists in {offset} liked songs")
+        return liked_artist_ids
+        
+    except Exception as e:
+        print(f"[ERROR] Error fetching liked songs: {e}")
+        return set()  # Return empty set on error, don't fail the entire process
+
 def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None):
     """
     Main lite script function that can be called from the web app
@@ -508,6 +559,9 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None):
         # Load existing artists data
         artists_data = load_artists_lite()
         print(f"[INFO] Loaded {len(artists_data)} artists from cache")
+        
+        # Fetch user's liked songs to build exclusion list
+        liked_songs_artist_ids = fetch_liked_songs_artist_ids(sp)
         
         # Get Last.fm data if available
         recent_tracks = []
@@ -560,7 +614,7 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None):
                         
                         print(f"[INFO] Attempt {attempts}: Searching for tracks by '{artist_name}'")
                         
-                        track = select_track_for_artist_lite(sp, artist_name, artists_data, existing_artist_ids)
+                        track = select_track_for_artist_lite(sp, artist_name, artists_data, existing_artist_ids, liked_songs_artist_ids)
                         if track:
                             selected_tracks.append(track)
                             # Add artist to existing set to avoid duplicates

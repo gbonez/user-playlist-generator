@@ -1,5 +1,5 @@
-// Configuration - Update this with your Railway URL
-const API_BASE_URL = 'https://release-radar-scripts-production.up.railway.app';
+// Configuration - Use /discovery prefix for all routes
+const API_BASE_URL = '/discovery';  // All routes under /discovery
 
 // State management
 let currentJobId = null;
@@ -13,7 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // Check if user is authenticated
 async function checkAuthStatus() {
     try {
-        const response = await fetch(`${API_BASE_URL}/api/playlists`, {
+        const response = await fetch(`${API_BASE_URL}/api/auth/status`, {
             credentials: 'include',
             headers: {
                 'Accept': 'application/json'
@@ -21,9 +21,14 @@ async function checkAuthStatus() {
         });
 
         if (response.ok) {
-            // User is authenticated, show dashboard
-            showDashboard();
-            loadPlaylists();
+            const data = await response.json();
+            if (data.authenticated) {
+                // User is authenticated, show dashboard
+                showDashboard(data.user);
+                loadPlaylists();
+            } else {
+                showLogin();
+            }
         } else {
             // User not authenticated, show login
             showLogin();
@@ -41,9 +46,14 @@ function showLogin() {
 }
 
 // Show dashboard page
-function showDashboard() {
+function showDashboard(user) {
     document.getElementById('loginPage').classList.remove('active');
     document.getElementById('dashboardPage').classList.add('active');
+
+    // Update user name if provided
+    if (user && user.display_name) {
+        document.getElementById('userName').textContent = `Welcome, ${user.display_name}!`;
+    }
 }
 
 // Login with Spotify
@@ -82,9 +92,7 @@ async function loadPlaylists() {
             headers: {
                 'Accept': 'application/json'
             }
-        });
-
-        if (!response.ok) {
+        }); if (!response.ok) {
             throw new Error('Failed to load playlists');
         }
 
@@ -271,8 +279,4 @@ function showError(message) {
     statusMessage.innerHTML = `<div class="error">${message}</div>`;
 }
 
-// Handle OAuth callback redirect
-if (window.location.pathname.includes('/callback') || window.location.search.includes('code=')) {
-    // User just completed OAuth, redirect back to main page
-    window.location.href = window.location.origin + window.location.pathname.replace('/callback', '');
-}
+// No need to handle OAuth callback redirect anymore - backend handles it
