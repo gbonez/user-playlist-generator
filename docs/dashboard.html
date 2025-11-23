@@ -72,28 +72,36 @@
 
         // Check authentication on page load
         window.addEventListener('DOMContentLoaded', async () => {
+            console.log('🎯 DASHBOARD LOADED');
+            console.log('📍 Current URL:', window.location.href);
+
             try {
                 // Check for token in localStorage
                 const tokenInfo = localStorage.getItem('spotify_token_info');
+                console.log('💾 Token from localStorage:', tokenInfo ? 'EXISTS' : 'NULL');
 
                 if (!tokenInfo) {
-                    console.log('No token found, redirecting to login');
+                    console.log('❌ No token found, redirecting to login');
                     window.location.href = '/user-playlist-generator/login.html';
                     return;
                 }
 
                 const token = JSON.parse(tokenInfo);
                 accessToken = token.access_token;
+                console.log('🔑 Access token parsed:', accessToken ? accessToken.substring(0, 20) + '...' : 'NULL');
 
                 // Check if token is expired
-                if (token.expires_at && Date.now() / 1000 > token.expires_at) {
-                    console.log('Token expired, redirecting to login');
+                const now = Date.now() / 1000;
+                console.log('⏰ Token expires at:', token.expires_at, '| Current time:', now);
+
+                if (token.expires_at && now > token.expires_at) {
+                    console.log('❌ Token expired, redirecting to login');
                     localStorage.removeItem('spotify_token_info');
                     window.location.href = '/user-playlist-generator/login.html';
                     return;
                 }
 
-                console.log('✅ Token found, loading user info');
+                console.log('✅ Token found and valid, loading user info from Spotify...');
 
                 // Fetch user info from Spotify API
                 const userResponse = await fetch('https://api.spotify.com/v1/me', {
@@ -102,17 +110,23 @@
                     }
                 });
 
+                console.log('👤 User info response status:', userResponse.status);
+
                 if (userResponse.ok) {
                     const userData = await userResponse.json();
+                    console.log('✅ User info loaded:', userData.display_name);
                     document.getElementById('userName').textContent = `Welcome, ${userData.display_name}!`;
                     loadPlaylists();
                 } else {
-                    console.error('Failed to fetch user info');
+                    console.error('❌ Failed to fetch user info, status:', userResponse.status);
+                    const errorText = await userResponse.text();
+                    console.error('❌ Error response:', errorText);
                     localStorage.removeItem('spotify_token_info');
                     window.location.href = '/user-playlist-generator/login.html';
                 }
             } catch (error) {
-                console.error('Auth check error:', error);
+                console.error('❌ Auth check error:', error);
+                console.error('❌ Error stack:', error.stack);
                 localStorage.removeItem('spotify_token_info');
                 window.location.href = '/user-playlist-generator/login.html';
             }

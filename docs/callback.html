@@ -61,13 +61,18 @@
 
             localStorage.setItem('spotify_token_info', JSON.stringify(tokenInfo));
             console.log('✅ Token saved to localStorage:', tokenInfo);
-            console.log('💾 localStorage content:', localStorage.getItem('spotify_token_info'));
 
-            // Redirect to dashboard
-            console.log('➡️  Redirecting to dashboard in 500ms...');
+            // Verify it was saved
+            const savedToken = localStorage.getItem('spotify_token_info');
+            console.log('💾 Verification - localStorage content:', savedToken);
+            console.log('✔️  Token successfully persisted:', savedToken !== null);
+
+            // Redirect to dashboard with longer delay to ensure localStorage is written
+            console.log('➡️  Redirecting to dashboard in 1000ms...');
             setTimeout(() => {
+                console.log('🚀 NOW redirecting to dashboard');
                 window.location.href = '/user-playlist-generator/dashboard.html';
-            }, 500);
+            }, 1000);
         } else {
             console.error('❌ No access token received in URL params');
             console.error('🔍 All URL params:', Array.from(urlParams.entries()));
