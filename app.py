@@ -145,23 +145,23 @@ def api_login():
     auth_url = sp_oauth.get_authorize_url()
     return jsonify({'auth_url': auth_url})
 
-@app.route('/callback')
+@app.route('/callback', methods=['GET', 'POST', 'OPTIONS'])
 def callback():
     """Handle Spotify OAuth callback and redirect back to frontend"""
-    print("\n" + "="*60)
-    print("🔔 SPOTIFY CALLBACK RECEIVED")
-    print("="*60)
-    print(f"📍 Request URL: {request.url}")
-    print(f"🌐 FRONTEND_URL: {FRONTEND_URL}")
-    print(f"🔄 SPOTIFY_REDIRECT_URI: {SPOTIFY_REDIRECT_URI}")
+    print("\n" + "="*60, flush=True)
+    print("🔔 SPOTIFY CALLBACK RECEIVED", flush=True)
+    print("="*60, flush=True)
+    print(f"📍 Request URL: {request.url}", flush=True)
+    print(f"🌐 FRONTEND_URL: {FRONTEND_URL}", flush=True)
+    print(f"🔄 SPOTIFY_REDIRECT_URI: {SPOTIFY_REDIRECT_URI}", flush=True)
     
     sp_oauth = create_spotify_oauth()
     
     code = request.args.get('code')
     error = request.args.get('error')
     
-    print(f"📝 Auth Code: {code[:20] + '...' if code else 'None'}")
-    print(f"❌ Error: {error if error else 'None'}")
+    print(f"📝 Auth Code: {code[:20] + '...' if code else 'None'}", flush=True)
+    print(f"❌ Error: {error if error else 'None'}", flush=True)
     
     if error:
         print(f"⚠️  Error from Spotify: {error}")
