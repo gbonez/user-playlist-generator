@@ -204,6 +204,18 @@ def callback():
         expires_at = token_info.get('expires_at', 0)
         
         print("✅ Token received and session created!")
+        
+        # Print the callback URL for DB script
+        print("\n" + "="*80)
+        print("🔗 BACKEND CALLBACK URL FOR DB SCRIPT:")
+        print(f"{SPOTIFY_REDIRECT_URI}?code={code}")
+        print("📋 Copy this URL to use in your db creation script")
+        print("="*80 + "\n")
+        
+        # Add a 3-second delay so you can copy the URL from browser if needed
+        print("⏱️  Waiting 3 seconds before redirect (so you can copy URL from browser)...")
+        time.sleep(3)
+        
         print(f"➡️  Redirecting to: {FRONTEND_URL}/callback.html with token")
         print("="*60 + "\n")
         
