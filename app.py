@@ -52,6 +52,12 @@ if not FRONTEND_URL:
     # Auto-detect: use localhost for local dev, GitHub Pages for production
     FRONTEND_URL = 'http://localhost:8000' if is_local_environment() else 'https://gbonez.github.io/user-playlist-generator'
 
+# Session configuration for cross-origin cookies
+app.config['SESSION_COOKIE_SAMESITE'] = 'None'  # Allow cross-site cookies
+app.config['SESSION_COOKIE_SECURE'] = True      # Require HTTPS
+app.config['SESSION_COOKIE_HTTPONLY'] = True    # Prevent JavaScript access
+app.config['SESSION_COOKIE_DOMAIN'] = '.gbonez.org' if not is_local_environment() else None  # Share cookies across subdomains
+
 CORS(app, 
      supports_credentials=True, 
      origins=[FRONTEND_URL, "http://localhost:*", "https://gbonez.github.io"],
@@ -170,12 +176,25 @@ def callback():
     try:
         print("🔐 Exchanging code for token...")
         token_info = sp_oauth.get_access_token(code)
+        
+        # Store in session (for API calls from frontend)
         session['token_info'] = token_info
+        
+        # Also pass access token to frontend for client-side storage
+        # Frontend will store it in localStorage and send it with API requests
+        access_token = token_info['access_token']
+        refresh_token = token_info.get('refresh_token', '')
+        expires_at = token_info.get('expires_at', 0)
+        
         print("✅ Token received and session created!")
-        print(f"➡️  Redirecting to: {FRONTEND_URL}/dashboard.html")
+        print(f"➡️  Redirecting to: {FRONTEND_URL}/callback.html with token")
         print("="*60 + "\n")
         
-        return redirect(f"{FRONTEND_URL}/dashboard.html")
+        # Redirect to frontend callback page with token info
+        # Frontend will extract token from URL and store in localStorage
+        import urllib.parse
+        redirect_url = f"{FRONTEND_URL}/callback.html?access_token={access_token}&refresh_token={urllib.parse.quote(refresh_token)}&expires_at={expires_at}"
+        return redirect(redirect_url)
     except Exception as e:
         print(f"❌ OAuth error: {e}")
         print(f"➡️  Redirecting to: {FRONTEND_URL}/login.html?error=auth_failed")

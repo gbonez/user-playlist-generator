@@ -38,12 +38,32 @@
     </style>
 
     <script>
-        // This page handles the OAuth callback from Spotify
-        // The backend has already processed the OAuth code and set the session
-        // Just redirect to dashboard
-        setTimeout(() => {
-            window.location.href = '/user-playlist-generator/dashboard.html';
-        }, 1000);
+        // Extract token info from URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        const accessToken = urlParams.get('access_token');
+        const refreshToken = urlParams.get('refresh_token');
+        const expiresAt = urlParams.get('expires_at');
+
+        if (accessToken) {
+            // Store token info in localStorage
+            const tokenInfo = {
+                access_token: accessToken,
+                refresh_token: refreshToken,
+                expires_at: parseInt(expiresAt)
+            };
+
+            localStorage.setItem('spotify_token_info', JSON.stringify(tokenInfo));
+            console.log('✅ Token saved to localStorage');
+
+            // Redirect to dashboard
+            setTimeout(() => {
+                window.location.href = '/user-playlist-generator/dashboard.html';
+            }, 500);
+        } else {
+            console.error('❌ No access token received');
+            // Redirect back to login with error
+            window.location.href = '/user-playlist-generator/login.html?error=no_token';
+        }
     </script>
 </body>
 
