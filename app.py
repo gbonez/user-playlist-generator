@@ -37,13 +37,13 @@ def load_config():
 # Load configuration
 config = load_config()
 
-# Use /discovery as the URL prefix for all routes
-app = Flask(__name__, static_folder='docs', static_url_path='/discovery')
+# Serve static files from root path
+app = Flask(__name__, static_folder='docs', static_url_path='')
 app.secret_key = config.get('FLASK_SECRET_KEY') or secrets.token_hex(16)
 
 # Enable CORS for API routes only (for potential future use)
 CORS(app, supports_credentials=True, resources={
-    r"/discovery/api/*": {
+    r"/api/*": {
         "origins": ["*"],  # Allow all origins for API
         "allow_headers": ["Content-Type"],
         "methods": ["GET", "POST", "OPTIONS"]
@@ -53,8 +53,8 @@ CORS(app, supports_credentials=True, resources={
 # Spotify OAuth configuration
 SPOTIFY_CLIENT_ID = config.get('SPOTIFY_CLIENT_ID')
 SPOTIFY_CLIENT_SECRET = config.get('SPOTIFY_CLIENT_SECRET')
-BASE_URL = config.get('BASE_URL', 'https://gbonez.org')
-SPOTIFY_REDIRECT_URI = f"{BASE_URL}/discovery/callback"
+BASE_URL = config.get('BASE_URL', 'https://release-radar-scripts-production.up.railway.app')
+SPOTIFY_REDIRECT_URI = f"{BASE_URL}/callback"
 
 # Set environment variables for the lite script to use
 if config.get('LASTFM_API_KEY'):
@@ -84,13 +84,12 @@ def get_spotify_client(token_info):
     """Create Spotify client from token info"""
     return Spotify(access_token=token_info['access_token'])
 
-@app.route('/discovery/')
-@app.route('/discovery')
+@app.route('/')
 def index():
     """Serve the static frontend HTML"""
     return app.send_static_file('index.html')
 
-@app.route('/discovery/api/auth/status')
+@app.route('/api/auth/status')
 def auth_status():
     """Check if user is authenticated"""
     if 'token_info' in session:
@@ -111,14 +110,14 @@ def auth_status():
     
     return jsonify({'authenticated': False}), 401
 
-@app.route('/discovery/login')
+@app.route('/login')
 def login():
     """Start Spotify OAuth flow"""
     sp_oauth = create_spotify_oauth()
     auth_url = sp_oauth.get_authorize_url()
     return redirect(auth_url)
 
-@app.route('/discovery/callback')
+@app.route('/callback')
 def callback():
     """Handle Spotify OAuth callback"""
     sp_oauth = create_spotify_oauth()
@@ -138,14 +137,14 @@ def callback():
         flash(f'Login failed: {str(e)}', 'error')
         return redirect(url_for('index'))
 
-@app.route('/discovery/logout')
+@app.route('/logout')
 def logout():
     """Clear session and logout"""
     session.clear()
     flash('Successfully logged out.', 'success')
     return redirect(url_for('index'))
 
-@app.route('/discovery/api/playlists')
+@app.route('/api/playlists')
 def get_playlists():
     """Get user's playlists"""
     if 'token_info' not in session:
@@ -178,7 +177,7 @@ def get_playlists():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/discovery/api/run_script', methods=['POST'])
+@app.route('/api/run_script', methods=['POST'])
 def run_script():
     """Start the lite script for the user"""
     if 'token_info' not in session:
@@ -265,7 +264,7 @@ def run_script():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/discovery/api/job_status/<job_id>')
+@app.route('/api/job_status/<job_id>')
 def get_job_status(job_id):
     """Get status of a running job"""
     if job_id not in running_jobs:
@@ -289,7 +288,7 @@ def get_job_status(job_id):
     
     return jsonify(response_data)
 
-@app.route('/discovery/cleanup_jobs', methods=['POST'])
+@app.route('/cleanup_jobs', methods=['POST'])
 def cleanup_jobs():
     """Remove old completed/failed jobs"""
     current_time = time.time()

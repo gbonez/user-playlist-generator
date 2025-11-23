@@ -1,5 +1,5 @@
-// Configuration - Use /discovery prefix for all routes
-const API_BASE_URL = '/discovery';  // All routes under /discovery
+// Configuration - Use root paths (Railway URL)
+const API_BASE_URL = '';  // Empty string means same origin (root path)
 
 // State management
 let currentJobId = null;
