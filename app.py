@@ -248,7 +248,17 @@ def get_playlists():
 @app.route('/api/run_script', methods=['POST'])
 def run_script():
     """Start the lite script for the user"""
-    if 'token_info' not in session:
+    # Get token from Authorization header (for token-based auth)
+    auth_header = request.headers.get('Authorization')
+    token_info = None
+    
+    if auth_header and auth_header.startswith('Bearer '):
+        access_token = auth_header.split(' ')[1]
+        token_info = {'access_token': access_token}
+    elif 'token_info' in session:
+        token_info = session['token_info']
+    
+    if not token_info:
         return jsonify({'error': 'Not authenticated'}), 401
     
     data = request.get_json()
@@ -256,29 +266,37 @@ def run_script():
     max_songs = int(data.get('max_songs', 10))
     lastfm_username = data.get('lastfm_username', '').strip()
     max_follower_count = data.get('max_follower_count')  # Can be None for no limit
-    
-    if not playlist_id:
-        return jsonify({'error': 'Playlist ID is required'}), 400
+    create_new = data.get('create_new', False)  # Whether to create new playlist
     
     if max_songs < 1 or max_songs > 50:
         return jsonify({'error': 'Max songs must be between 1 and 50'}), 400
     
     try:
         # Create Spotify client
-        sp = get_spotify_client(session['token_info'])
+        sp = get_spotify_client(token_info)
+        current_user = sp.current_user()
         
-        # Verify user can modify this playlist
-        try:
-            playlist_info = sp.playlist(playlist_id)
-            current_user = sp.current_user()
-            
-            if playlist_info['owner']['id'] != current_user['id']:
-                return jsonify({'error': 'You can only run the script on playlists you own'}), 403
+        # If creating new playlist, we'll do it after discovery
+        # Otherwise verify user can modify the existing playlist
+        playlist_info = None
+        if create_new:
+            playlist_name = 'Enhanced Recs ⚙️'
+        else:
+            if not playlist_id:
+                return jsonify({'error': 'Playlist ID is required when not creating new playlist'}), 400
                 
-        except SpotifyException as e:
-            if e.http_status == 404:
-                return jsonify({'error': 'Playlist not found'}), 404
-            raise
+            try:
+                playlist_info = sp.playlist(playlist_id)
+                
+                if playlist_info['owner']['id'] != current_user['id']:
+                    return jsonify({'error': 'You can only run the script on playlists you own'}), 403
+                
+                playlist_name = playlist_info['name']
+                    
+            except SpotifyException as e:
+                if e.http_status == 404:
+                    return jsonify({'error': 'Playlist not found'}), 404
+                raise
         
         # Generate job ID
         job_id = secrets.token_hex(8)
@@ -287,10 +305,12 @@ def run_script():
         running_jobs[job_id] = {
             'status': 'starting',
             'playlist_id': playlist_id,
-            'playlist_name': playlist_info['name'],
+            'playlist_name': playlist_name,
             'max_songs': max_songs,
             'lastfm_username': lastfm_username if lastfm_username else None,
             'max_follower_count': max_follower_count,
+            'create_new': create_new,
+            'user_id': current_user['id'],
             'started_at': time.time(),
             'result': None,
             'error': None
@@ -301,10 +321,32 @@ def run_script():
             try:
                 running_jobs[job_id]['status'] = 'running'
                 
-                # Run the lite script
+                # Create fresh Spotify client in this thread
+                thread_sp = get_spotify_client(token_info)
+                thread_user = thread_sp.current_user()
+                
+                # Create new playlist if needed (BEFORE discovery to get the ID)
+                actual_playlist_id = playlist_id
+                if create_new:
+                    try:
+                        new_playlist = thread_sp.user_playlist_create(
+                            user=thread_user['id'],
+                            name='Enhanced Recs ⚙️',
+                            public=True,
+                            description='Playlist of personalized music recs generated from https://gbonez.github.io/user-playlist-generator/'
+                        )
+                        actual_playlist_id = new_playlist['id']
+                        running_jobs[job_id]['playlist_id'] = actual_playlist_id
+                        print(f"✅ Created new playlist: {new_playlist['name']} | ID: {actual_playlist_id}")
+                    except Exception as e:
+                        running_jobs[job_id]['status'] = 'failed'
+                        running_jobs[job_id]['error'] = f'Failed to create playlist: {str(e)}'
+                        return
+                
+                # Run the lite script with the playlist ID
                 result = run_lite_script(
-                    sp=sp,
-                    output_playlist_id=playlist_id,
+                    sp=thread_sp,
+                    output_playlist_id=actual_playlist_id,
                     max_songs=max_songs,
                     lastfm_username=lastfm_username if lastfm_username else None,
                     max_follower_count=max_follower_count

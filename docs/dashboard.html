@@ -282,35 +282,9 @@
                 return;
             }
 
-            // Create new playlist if checkbox is checked
+            // If creating new playlist, pass null as playlist_id and set create_new flag
             if (createNew) {
-                try {
-                    const homePageUrl = 'https://gbonez.github.io/user-playlist-generator/';
-                    const newPlaylistResponse = await fetch(`https://api.spotify.com/v1/users/${window.spotifyUserId}/playlists`, {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${accessToken}`,
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            name: 'Enhanced Recs ⚙️',
-                            description: `Playlist of personalized music recs generated from ${homePageUrl}`,
-                            public: true
-                        })
-                    });
-
-                    if (!newPlaylistResponse.ok) {
-                        throw new Error('Failed to create new playlist');
-                    }
-
-                    const newPlaylist = await newPlaylistResponse.json();
-                    playlistId = newPlaylist.id;
-                    console.log('✅ Created new playlist:', newPlaylist.name, '| ID:', playlistId);
-                } catch (error) {
-                    console.error('Error creating playlist:', error);
-                    alert('Failed to create new playlist. Please try again.');
-                    return;
-                }
+                playlistId = null;
             } else if (!playlistId) {
                 alert('Please select a playlist or check "Create new playlist?"');
                 return;
@@ -336,7 +310,8 @@
                         playlist_id: playlistId,
                         max_songs: maxSongs,
                         lastfm_username: lastfmUsername || null,
-                        max_follower_count: maxFollowers
+                        max_follower_count: maxFollowers,
+                        create_new: createNew
                     })
                 });
 
