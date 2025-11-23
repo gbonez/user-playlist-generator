@@ -11,12 +11,20 @@
 <body>
     <div class="container">
         <div class="dashboard-page">
-            <div class="header">
-                <div class="user-info">
-                    <div class="logo-small">🎵</div>
-                    <div>
-                        <h2 id="userName">Welcome!</h2>
-                        <button onclick="logout()" class="btn-text">Logout</button>
+            <div class="header"
+                style="position: sticky; top: 0; z-index: 100; background: rgba(17, 24, 39, 0.95); backdrop-filter: blur(10px); padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
+                <h2 id="userName" style="margin: 0; cursor: pointer; font-size: 1.25rem;">Welcome!</h2>
+                <div class="profile-dropdown" style="position: relative;">
+                    <img id="userAvatar" src="" alt="Profile" onclick="toggleProfileMenu()"
+                        style="width: 48px; height: 48px; border-radius: 50%; cursor: pointer; border: 2px solid #1db954; object-fit: cover;">
+                    <div id="profileMenu" class="profile-menu"
+                        style="display: none; position: absolute; top: 60px; right: 0; background: #282828; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; min-width: 150px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);">
+                        <button onclick="logout()"
+                            style="width: 100%; padding: 12px 16px; background: none; border: none; color: white; text-align: left; cursor: pointer; font-size: 0.95rem; transition: background 0.2s;"
+                            onmouseover="this.style.background='rgba(255,255,255,0.1)'"
+                            onmouseout="this.style.background='none'">
+                            Log out
+                        </button>
                     </div>
                 </div>
             </div>
@@ -27,7 +35,15 @@
 
                 <div class="form-card">
                     <div class="form-group">
-                        <label for="playlistSelect">Select Playlist</label>
+                        <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                            <input type="checkbox" id="createNewPlaylist" onchange="togglePlaylistSelect()"
+                                style="width: 18px; height: 18px; cursor: pointer;">
+                            <span>Create new playlist?</span>
+                        </label>
+                    </div>
+
+                    <div class="form-group" id="playlistSelectGroup">
+                        <label for="playlistSelect">Select playlist to add songs to</label>
                         <select id="playlistSelect" class="input">
                             <option value="">Loading playlists...</option>
                         </select>
@@ -116,6 +132,19 @@
                     const userData = await userResponse.json();
                     console.log('✅ User info loaded:', userData.display_name);
                     document.getElementById('userName').textContent = `Welcome, ${userData.display_name}!`;
+
+                    // Set profile picture
+                    const userAvatar = document.getElementById('userAvatar');
+                    if (userData.images && userData.images.length > 0) {
+                        userAvatar.src = userData.images[0].url;
+                    } else {
+                        // Fallback to default avatar
+                        userAvatar.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%231db954"><circle cx="12" cy="12" r="10"/><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" fill="white"/></svg>';
+                    }
+
+                    // Store user ID for creating playlists
+                    window.spotifyUserId = userData.id;
+
                     loadPlaylists();
                 } else {
                     console.error('❌ Failed to fetch user info, status:', userResponse.status);
@@ -131,6 +160,26 @@
                 window.location.href = '/user-playlist-generator/login.html';
             }
         });
+
+        function toggleProfileMenu() {
+            const menu = document.getElementById('profileMenu');
+            menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+        }
+
+        // Close profile menu when clicking outside
+        document.addEventListener('click', (event) => {
+            const profileDropdown = document.querySelector('.profile-dropdown');
+            const menu = document.getElementById('profileMenu');
+            if (menu && !profileDropdown.contains(event.target)) {
+                menu.style.display = 'none';
+            }
+        });
+
+        function togglePlaylistSelect() {
+            const createNew = document.getElementById('createNewPlaylist').checked;
+            const playlistGroup = document.getElementById('playlistSelectGroup');
+            playlistGroup.style.display = createNew ? 'none' : 'block';
+        }
 
         async function logout() {
             // Clear token from localStorage
@@ -181,17 +230,47 @@
         }
 
         async function startDiscovery() {
-            const playlistId = document.getElementById('playlistSelect').value;
+            const createNew = document.getElementById('createNewPlaylist').checked;
+            let playlistId = document.getElementById('playlistSelect').value;
             const maxSongs = parseInt(document.getElementById('maxSongs').value);
             const lastfmUsername = document.getElementById('lastfmUsername').value.trim();
 
-            if (!playlistId) {
-                alert('Please select a playlist');
+            if (maxSongs < 1 || maxSongs > 50) {
+                alert('Number of songs must be between 1 and 50');
                 return;
             }
 
-            if (maxSongs < 1 || maxSongs > 50) {
-                alert('Number of songs must be between 1 and 50');
+            // Create new playlist if checkbox is checked
+            if (createNew) {
+                try {
+                    const homePageUrl = 'https://gbonez.github.io/user-playlist-generator/';
+                    const newPlaylistResponse = await fetch(`https://api.spotify.com/v1/users/${window.spotifyUserId}/playlists`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${accessToken}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            name: 'Enhanced Recs ⚙️',
+                            description: `Playlist of personalized music recs generated from ${homePageUrl}`,
+                            public: true
+                        })
+                    });
+
+                    if (!newPlaylistResponse.ok) {
+                        throw new Error('Failed to create new playlist');
+                    }
+
+                    const newPlaylist = await newPlaylistResponse.json();
+                    playlistId = newPlaylist.id;
+                    console.log('✅ Created new playlist:', newPlaylist.name, '| ID:', playlistId);
+                } catch (error) {
+                    console.error('Error creating playlist:', error);
+                    alert('Failed to create new playlist. Please try again.');
+                    return;
+                }
+            } else if (!playlistId) {
+                alert('Please select a playlist or check "Create new playlist?"');
                 return;
             }
 
