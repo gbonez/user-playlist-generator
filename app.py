@@ -271,7 +271,7 @@ def run_script():
     data = request.get_json()
     playlist_id = data.get('playlist_id')
     max_songs = int(data.get('max_songs', 10))
-    lastfm_username = data.get('lastfm_username', '').strip()
+    lastfm_username = (data.get('lastfm_username') or '').strip()
     max_follower_count = data.get('max_follower_count')  # Can be None for no limit
     create_new = data.get('create_new', False)  # Whether to create new playlist
     
