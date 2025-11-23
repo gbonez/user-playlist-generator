@@ -141,26 +141,44 @@ def api_login():
 @app.route('/callback')
 def callback():
     """Handle Spotify OAuth callback and redirect back to frontend"""
+    print("\n" + "="*60)
+    print("🔔 SPOTIFY CALLBACK RECEIVED")
+    print("="*60)
+    print(f"📍 Request URL: {request.url}")
+    print(f"🌐 FRONTEND_URL: {FRONTEND_URL}")
+    print(f"🔄 SPOTIFY_REDIRECT_URI: {SPOTIFY_REDIRECT_URI}")
+    
     sp_oauth = create_spotify_oauth()
     
     code = request.args.get('code')
     error = request.args.get('error')
     
+    print(f"📝 Auth Code: {code[:20] + '...' if code else 'None'}")
+    print(f"❌ Error: {error if error else 'None'}")
+    
     if error:
-        # Redirect to frontend with error
+        print(f"⚠️  Error from Spotify: {error}")
+        print(f"➡️  Redirecting to: {FRONTEND_URL}/login.html?error={error}")
         return redirect(f"{FRONTEND_URL}/login.html?error={error}")
     
     if not code:
+        print("⚠️  No auth code received!")
+        print(f"➡️  Redirecting to: {FRONTEND_URL}/login.html?error=no_code")
         return redirect(f"{FRONTEND_URL}/login.html?error=no_code")
     
     try:
+        print("🔐 Exchanging code for token...")
         token_info = sp_oauth.get_access_token(code)
         session['token_info'] = token_info
+        print("✅ Token received and session created!")
+        print(f"➡️  Redirecting to: {FRONTEND_URL}/dashboard.html")
+        print("="*60 + "\n")
         
-        # Redirect back to frontend dashboard
         return redirect(f"{FRONTEND_URL}/dashboard.html")
     except Exception as e:
-        print(f"OAuth error: {e}")
+        print(f"❌ OAuth error: {e}")
+        print(f"➡️  Redirecting to: {FRONTEND_URL}/login.html?error=auth_failed")
+        print("="*60 + "\n")
         return redirect(f"{FRONTEND_URL}/login.html?error=auth_failed")
 
 @app.route('/api/logout')
@@ -350,7 +368,15 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_ENV') == 'development'
     
-    print(f"Starting Music Discovery Web App on port {port}")
-    print(f"Spotify Redirect URI: {SPOTIFY_REDIRECT_URI}")
+    print("\n" + "="*60)
+    print("🚀 STARTING MUSIC DISCOVERY WEB APP")
+    print("="*60)
+    print(f"🌐 Port: {port}")
+    print(f"🔧 Debug Mode: {debug}")
+    print(f"🎯 Frontend URL: {FRONTEND_URL}")
+    print(f"🔄 Spotify Redirect URI: {SPOTIFY_REDIRECT_URI}")
+    print(f"📍 Base URL: {BASE_URL}")
+    print(f"🔑 Client ID: {SPOTIFY_CLIENT_ID[:20]}...")
+    print("="*60 + "\n")
     
     app.run(host='0.0.0.0', port=port, debug=debug)

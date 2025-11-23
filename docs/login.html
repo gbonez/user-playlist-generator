@@ -122,6 +122,13 @@
         }
 
         function loginWithSpotify() {
+            console.log('🚀 LOGIN FLOW STARTED');
+            console.log('📍 Current Location:', window.location.href);
+            console.log('🔑 Client ID:', SPOTIFY_CLIENT_ID);
+            console.log('🔄 Callback URL:', CALLBACK_URL);
+            console.log('🎯 API URL:', API_URL);
+            console.log('🌐 Is Local:', isLocal);
+
             // Build Spotify authorization URL
             const authUrl = 'https://accounts.spotify.com/authorize?' + new URLSearchParams({
                 client_id: SPOTIFY_CLIENT_ID,
@@ -130,6 +137,9 @@
                 scope: SCOPES,
                 show_dialog: 'true'
             });
+
+            console.log('🎵 Full Spotify Auth URL:', authUrl);
+            console.log('➡️  Redirecting to Spotify...');
 
             // Redirect user directly to Spotify authorization
             window.location.href = authUrl;
