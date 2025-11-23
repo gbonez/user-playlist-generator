@@ -2,6 +2,7 @@ import os
 import json
 import secrets
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash
+from flask_cors import CORS
 from spotipy import Spotify
 from spotipy.oauth2 import SpotifyOAuth
 from spotipy.exceptions import SpotifyException
@@ -38,6 +39,15 @@ config = load_config()
 
 app = Flask(__name__)
 app.secret_key = config.get('FLASK_SECRET_KEY') or secrets.token_hex(16)
+
+# Enable CORS for all routes - allow requests from GitHub Pages
+CORS(app, supports_credentials=True, resources={
+    r"/api/*": {
+        "origins": ["https://gbonez.github.io", "http://localhost:*"],
+        "allow_headers": ["Content-Type"],
+        "methods": ["GET", "POST", "OPTIONS"]
+    }
+})
 
 # Spotify OAuth configuration
 SPOTIFY_CLIENT_ID = config.get('SPOTIFY_CLIENT_ID')
@@ -122,7 +132,7 @@ def logout():
     flash('Successfully logged out.', 'success')
     return redirect(url_for('index'))
 
-@app.route('/playlists')
+@app.route('/api/playlists')
 def get_playlists():
     """Get user's playlists"""
     if 'token_info' not in session:
@@ -155,7 +165,7 @@ def get_playlists():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/run_script', methods=['POST'])
+@app.route('/api/run_script', methods=['POST'])
 def run_script():
     """Start the lite script for the user"""
     if 'token_info' not in session:
@@ -242,7 +252,7 @@ def run_script():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/job_status/<job_id>')
+@app.route('/api/job_status/<job_id>')
 def get_job_status(job_id):
     """Get status of a running job"""
     if job_id not in running_jobs:
