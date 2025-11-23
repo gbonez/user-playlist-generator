@@ -176,3 +176,7 @@ rolled_tracks.json
 artists.json
 *.tmp
 temp/
+db creation/AUDIO_FEATURES_README.md
+db creation/build_audio_features_db.py
+db creation/find_similar_songs.py
+db creation/test_secrets.py
