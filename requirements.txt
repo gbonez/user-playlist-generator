@@ -1,0 +1,6 @@
+Flask==2.3.3
+spotipy==2.23.0
+requests==2.31.0
+selenium==4.15.0
+beautifulsoup4==4.12.2
+chromedriver-binary==117.0.5938.92.0

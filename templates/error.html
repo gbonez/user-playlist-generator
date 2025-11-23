@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}Error {{ code }} - Music Discovery{% endblock %}
+
+{% block content %}
+<div class="card" style="text-align: center; max-width: 500px; margin: 0 auto;">
+    <h2>Oops! Something went wrong</h2>
+
+    <div style="font-size: 4rem; margin: 20px 0;">
+        {% if code == 404 %}🔍{% else %}⚠️{% endif %}
+    </div>
+
+    <h3>Error {{ code }}</h3>
+    <p style="opacity: 0.8; margin: 20px 0;">{{ error }}</p>
+
+    <div style="margin-top: 30px;">
+        <a href="/" class="button">🏠 Go Home</a>
+        <button onclick="window.history.back()" class="button secondary" style="margin-left: 10px;">
+            ← Go Back
+        </button>
+    </div>
+</div>
+{% endblock %}

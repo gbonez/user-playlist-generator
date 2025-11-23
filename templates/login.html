@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title %}Login - Music Discovery{% endblock %}
+
+{% block content %}
+<div class="card" style="text-align: center; max-width: 500px; margin: 0 auto;">
+    <h2>Welcome to Music Discovery</h2>
+    <p>Connect your Spotify account to start discovering new music tailored to your taste.</p>
+
+    <div style="margin: 30px 0;">
+        <h3>What this app does:</h3>
+        <ul style="text-align: left; margin: 20px 0; line-height: 2;">
+            <li>🎯 Analyzes your music preferences</li>
+            <li>🔍 Discovers new tracks from various playlists</li>
+            <li>🎵 Adds curated songs to your chosen playlist</li>
+            <li>🧹 Removes old tracks to keep it fresh</li>
+            <li>📱 Works entirely through your Spotify account</li>
+        </ul>
+    </div>
+
+    <div style="margin: 30px 0;">
+        <h3>Features of the Lite Version:</h3>
+        <ul style="text-align: left; margin: 20px 0; line-height: 2; opacity: 0.8;">
+            <li>✨ Simplified music discovery</li>
+            <li>🚀 No database required</li>
+            <li>🔒 Your data stays private</li>
+            <li>⚡ Fast and lightweight</li>
+        </ul>
+    </div>
+
+    <a href="/login" class="button" style="font-size: 1.1rem; padding: 16px 32px;">
+        🎵 Connect with Spotify
+    </a>
+
+    <p style="margin-top: 20px; font-size: 0.9rem; opacity: 0.7;">
+        By logging in, you'll be redirected to Spotify to authorize this app.
+        We'll only access the permissions needed to manage your playlists.
+    </p>
+</div>
+
+<div class="card" style="max-width: 600px; margin: 40px auto 0;">
+    <h3>How it Works</h3>
+    <div class="grid">
+        <div>
+            <h4>1. Connect</h4>
+            <p>Log in with your Spotify account securely through Spotify's official OAuth system.</p>
+        </div>
+        <div>
+            <h4>2. Choose</h4>
+            <p>Select a playlist you own where you want new music to be added.</p>
+        </div>
+        <div>
+            <h4>3. Configure</h4>
+            <p>Set how many new tracks you want and optionally connect your Last.fm for better recommendations.</p>
+        </div>
+        <div>
+            <h4>4. Discover</h4>
+            <p>Let the algorithm find new music based on your listening history and preferences.</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

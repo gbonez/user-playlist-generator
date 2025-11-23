@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Music Discovery{% endblock %}
+
+{% block subtitle %}Welcome back, {{ user.display_name }}!{% endblock %}
+
+{% block content %}
+<div class="user-info">
+    {% if user.images and user.images|length > 0 %}
+    <img src="{{ user.images[0].url }}" alt="{{ user.display_name }}" class="user-avatar">
+    {% else %}
+    <div class="user-avatar"
+        style="background: var(--button-bg); display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">
+        {{ user.display_name[0] if user.display_name else '?' }}
+    </div>
+    {% endif %}
+    <div>
+        <strong>{{ user.display_name or user.id }}</strong>
+        <div style="opacity: 0.7; font-size: 0.9rem;">
+            {{ user.followers.total if user.followers else 0 }} followers
+        </div>
+    </div>
+    <div style="margin-left: auto;">
+        <a href="/logout" class="button secondary">Logout</a>
+    </div>
+</div>
+
+<div class="grid">
+    <div class="card">
+        <h3>🎵 Run Music Discovery</h3>
+        <p>Add new tracks to one of your playlists based on your music taste.</p>
+
+        <form id="discoveryForm">
+            <div class="input-group">
+                <label for="playlist">Choose Playlist:</label>
+                <select id="playlist" name="playlist" required>
+                    <option value="">Loading playlists...</option>
+                </select>
+                <small>Select a playlist you own where new music will be added</small>
+            </div>
+
+            <div class="input-group">
+                <label for="maxSongs">Number of Songs:</label>
+                <input type="number" id="maxSongs" name="maxSongs" value="10" min="1" max="50" required>
+                <small>How many new tracks to add (1-50)</small>
+            </div>
+
+            <div class="input-group">
+                <label for="lastfmUsername">Last.fm Username (Optional):</label>
+                <input type="text" id="lastfmUsername" name="lastfmUsername" placeholder="Enter your Last.fm username">
+                <small>For better recommendations based on your listening history</small>
+            </div>
+
+            <button type="submit" class="button" id="runButton">
+                🚀 Start Discovery
+            </button>
+        </form>
+    </div>
+
+    <div class="card">
+        <h3>📊 Job Status</h3>
+        <div id="jobStatus">
+            <p style="opacity: 0.7;">No active jobs</p>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>ℹ️ How It Works</h3>
+    <p>The music discovery algorithm:</p>
+    <ol>
+        <li><strong>Analyzes</strong> your liked songs and listening patterns</li>
+        <li><strong>Searches</strong> for tracks in artist playlists and user-curated playlists</li>
+        <li><strong>Uses Last.fm</strong> (if provided) to find similar artists you might like</li>
+        <li><strong>Validates</strong> tracks to avoid duplicates and ensure quality</li>
+        <li><strong>Adds</strong> selected tracks to your chosen playlist</li>
+        <li><strong>Cleans up</strong> by removing tracks older than 7 days</li>
+    </ol>
+
+    <div style="margin-top: 20px; padding: 16px; background: var(--muted-bg); border-radius: 8px;">
+        <strong>Note:</strong> This is the lite version that doesn't use databases or send notifications.
+        Your data stays private and the process is simplified for the best user experience.
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+    let currentJobId = null;
+    let statusInterval = null;
+
+    // Load user's playlists
+    async function loadPlaylists() {
+        try {
+            const response = await fetch('/playlists');
+            const data = await response.json();
+
+            if (data.error) {
+                throw new Error(data.error);
+            }
+
+            const select = document.getElementById('playlist');
+            select.innerHTML = '<option value="">Select a playlist...</option>';
+
+            data.playlists.forEach(playlist => {
+                const option = document.createElement('option');
+                option.value = playlist.id;
+                option.textContent = `${playlist.name} (${playlist.tracks_total} tracks)${playlist.is_owner ? '' : ' - Collaborative'}`;
+                select.appendChild(option);
+            });
+
+        } catch (error) {
+            document.getElementById('playlist').innerHTML = '<option value="">Error loading playlists</option>';
+            console.error('Error loading playlists:', error);
+        }
+    }
+
+    // Start music discovery
+    async function startDiscovery(formData) {
+        try {
+            const response = await fetch('/run_script', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    playlist_id: formData.get('playlist'),
+                    max_songs: parseInt(formData.get('maxSongs')),
+                    lastfm_username: formData.get('lastfmUsername')
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.error) {
+                throw new Error(data.error);
+            }
+
+            currentJobId = data.job_id;
+            startStatusPolling();
+
+            // Update UI
+            document.getElementById('runButton').disabled = true;
+            document.getElementById('runButton').textContent = '🔄 Running...';
+
+        } catch (error) {
+            alert('Error starting discovery: ' + error.message);
+            resetUI();
+        }
+    }
+
+    // Poll job status
+    async function checkJobStatus() {
+        if (!currentJobId) return;
+
+        try {
+            const response = await fetch(`/job_status/${currentJobId}`);
+            const data = await response.json();
+
+            if (data.error) {
+                throw new Error(data.error);
+            }
+
+            updateJobStatus(data);
+
+            if (data.status === 'completed' || data.status === 'failed') {
+                stopStatusPolling();
+                resetUI();
+
+                if (data.status === 'completed') {
+                    showSuccess(data.result);
+                } else {
+                    showError(data.error);
+                }
+            }
+
+        } catch (error) {
+            console.error('Error checking job status:', error);
+            stopStatusPolling();
+            resetUI();
+        }
+    }
+
+    function updateJobStatus(data) {
+        const statusDiv = document.getElementById('jobStatus');
+        const elapsed = Math.floor(data.elapsed_time);
+
+        let statusIcon = '';
+        let statusClass = '';
+
+        switch (data.status) {
+            case 'starting':
+            case 'running':
+                statusIcon = '🔄';
+                statusClass = 'running';
+                break;
+            case 'completed':
+                statusIcon = '✅';
+                statusClass = 'completed';
+                break;
+            case 'failed':
+                statusIcon = '❌';
+                statusClass = 'failed';
+                break;
+            default:
+                statusIcon = '⏸️';
+        }
+
+        statusDiv.innerHTML = `
+        <div style="display: flex; align-items: center; margin-bottom: 10px;">
+            <span class="status-indicator ${statusClass}"></span>
+            <strong>${statusIcon} ${data.status.toUpperCase()}</strong>
+        </div>
+        <div style="font-size: 0.9rem; opacity: 0.8;">
+            Playlist: ${data.playlist_name}<br>
+            Target songs: ${data.max_songs}<br>
+            Elapsed: ${elapsed}s
+        </div>
+        ${data.status === 'running' ? '<div class="progress"><div class="progress-bar"></div></div>' : ''}
+    `;
+    }
+
+    function showSuccess(result) {
+        const statusDiv = document.getElementById('jobStatus');
+        statusDiv.innerHTML += `
+        <div style="margin-top: 15px; padding: 12px; background: rgba(34, 197, 94, 0.1); border-radius: 6px; border: 1px solid rgba(34, 197, 94, 0.2);">
+            <strong>🎉 Success!</strong><br>
+            <small>
+                ✅ ${result.tracks_added} new tracks added<br>
+                🧹 ${result.tracks_removed} old tracks removed<br>
+            </small>
+        </div>
+    `;
+    }
+
+    function showError(error) {
+        const statusDiv = document.getElementById('jobStatus');
+        statusDiv.innerHTML += `
+        <div style="margin-top: 15px; padding: 12px; background: rgba(239, 68, 68, 0.1); border-radius: 6px; border: 1px solid rgba(239, 68, 68, 0.2);">
+            <strong>❌ Error:</strong><br>
+            <small>${error}</small>
+        </div>
+    `;
+    }
+
+    function startStatusPolling() {
+        if (statusInterval) clearInterval(statusInterval);
+        statusInterval = setInterval(checkJobStatus, 2000);
+        checkJobStatus(); // Check immediately
+    }
+
+    function stopStatusPolling() {
+        if (statusInterval) {
+            clearInterval(statusInterval);
+            statusInterval = null;
+        }
+        currentJobId = null;
+    }
+
+    function resetUI() {
+        document.getElementById('runButton').disabled = false;
+        document.getElementById('runButton').textContent = '🚀 Start Discovery';
+    }
+
+    // Form submission
+    document.getElementById('discoveryForm').addEventListener('submit', function (e) {
+        e.preventDefault();
+
+        if (currentJobId) {
+            alert('A discovery job is already running. Please wait for it to complete.');
+            return;
+        }
+
+        const formData = new FormData(this);
+
+        if (!formData.get('playlist')) {
+            alert('Please select a playlist');
+            return;
+        }
+
+        startDiscovery(formData);
+    });
+
+    // Load playlists on page load
+    document.addEventListener('DOMContentLoaded', loadPlaylists);
+
+    // Cleanup old jobs periodically
+    setInterval(async () => {
+        try {
+            await fetch('/cleanup_jobs', { method: 'POST' });
+        } catch (error) {
+            console.log('Cleanup failed:', error);
+        }
+    }, 300000); // Every 5 minutes
+</script>
+{% endblock %}
