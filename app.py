@@ -99,7 +99,7 @@ def create_spotify_oauth():
 
 def get_spotify_client(token_info):
     """Create Spotify client from token info"""
-    return Spotify(access_token=token_info['access_token'])
+    return Spotify(auth=token_info['access_token'])
 
 @app.route('/')
 def index():
