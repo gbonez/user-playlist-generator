@@ -136,6 +136,14 @@ def login():
     """Redirect directly to Spotify authorization"""
     sp_oauth = create_spotify_oauth()
     auth_url = sp_oauth.get_authorize_url()
+    
+    # Print the auth URL for DB script use
+    print("\n" + "="*80, flush=True)
+    print("🔗 AUTHENTICATION URL FOR DB SCRIPT:", flush=True)
+    print(auth_url, flush=True)
+    print("📋 Copy this URL to use in your db creation script", flush=True)
+    print("="*80 + "\n", flush=True)
+    
     return redirect(auth_url)
 
 @app.route('/api/login')
@@ -143,6 +151,14 @@ def api_login():
     """Generate Spotify OAuth URL for frontend to use (API version)"""
     sp_oauth = create_spotify_oauth()
     auth_url = sp_oauth.get_authorize_url()
+    
+    # Print the auth URL for DB script use
+    print("\n" + "="*80, flush=True)
+    print("🔗 AUTHENTICATION URL FOR DB SCRIPT:", flush=True)
+    print(auth_url, flush=True)
+    print("📋 Copy this URL to use in your db creation script", flush=True)
+    print("="*80 + "\n", flush=True)
+    
     return jsonify({'auth_url': auth_url})
 
 @app.route('/callback', methods=['GET', 'POST', 'OPTIONS'])
