@@ -97,7 +97,9 @@
 
         // Spotify OAuth configuration
         const SPOTIFY_CLIENT_ID = 'da06cf57559f4a4d84298837e7000103';
-        const CALLBACK_URL = `${API_URL}/callback`; // Spotify redirects to backend callback
+        // Spotify MUST redirect to BACKEND /callback (not frontend callback.html)
+        // Backend exchanges code for token, sets session, then redirects to frontend dashboard
+        const CALLBACK_URL = `${API_URL}/callback`;
         const SCOPES = 'playlist-modify-public playlist-modify-private user-library-read';
 
         console.log('Hostname:', window.location.hostname);

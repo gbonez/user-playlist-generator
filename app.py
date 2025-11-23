@@ -63,8 +63,9 @@ CORS(app,
 SPOTIFY_CLIENT_ID = config.get('SPOTIFY_CLIENT_ID')
 SPOTIFY_CLIENT_SECRET = config.get('SPOTIFY_CLIENT_SECRET')
 BASE_URL = config.get('BASE_URL', 'https://release-radar-scripts-production.up.railway.app')
-# OAuth callback redirects back to frontend
-SPOTIFY_REDIRECT_URI = f"{FRONTEND_URL}/callback.html"
+# Spotify redirects to BACKEND /callback endpoint to exchange code for token
+# Then backend redirects to frontend dashboard
+SPOTIFY_REDIRECT_URI = f"{BASE_URL}/callback"
 
 # Set environment variables for the lite script to use
 if config.get('LASTFM_API_KEY'):
