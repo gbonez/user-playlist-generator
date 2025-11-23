@@ -38,11 +38,18 @@
     </style>
 
     <script>
+        console.log('🔄 CALLBACK PAGE LOADED');
+        console.log('📍 Full URL:', window.location.href);
+
         // Extract token info from URL parameters
         const urlParams = new URLSearchParams(window.location.search);
         const accessToken = urlParams.get('access_token');
         const refreshToken = urlParams.get('refresh_token');
         const expiresAt = urlParams.get('expires_at');
+
+        console.log('🔑 Access Token:', accessToken ? accessToken.substring(0, 20) + '...' : 'NULL');
+        console.log('🔄 Refresh Token:', refreshToken ? refreshToken.substring(0, 20) + '...' : 'NULL');
+        console.log('⏰ Expires At:', expiresAt);
 
         if (accessToken) {
             // Store token info in localStorage
@@ -53,14 +60,17 @@
             };
 
             localStorage.setItem('spotify_token_info', JSON.stringify(tokenInfo));
-            console.log('✅ Token saved to localStorage');
+            console.log('✅ Token saved to localStorage:', tokenInfo);
+            console.log('💾 localStorage content:', localStorage.getItem('spotify_token_info'));
 
             // Redirect to dashboard
+            console.log('➡️  Redirecting to dashboard in 500ms...');
             setTimeout(() => {
                 window.location.href = '/user-playlist-generator/dashboard.html';
             }, 500);
         } else {
-            console.error('❌ No access token received');
+            console.error('❌ No access token received in URL params');
+            console.error('🔍 All URL params:', Array.from(urlParams.entries()));
             // Redirect back to login with error
             window.location.href = '/user-playlist-generator/login.html?error=no_token';
         }
