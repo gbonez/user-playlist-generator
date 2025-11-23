@@ -37,24 +37,25 @@ def load_config():
 # Load configuration
 config = load_config()
 
-# Serve static files from root path
-app = Flask(__name__, static_folder='docs', static_url_path='')
+# API-only backend - no static file serving
+app = Flask(__name__)
 app.secret_key = config.get('FLASK_SECRET_KEY') or secrets.token_hex(16)
 
-# Enable CORS for API routes only (for potential future use)
-CORS(app, supports_credentials=True, resources={
-    r"/api/*": {
-        "origins": ["*"],  # Allow all origins for API
-        "allow_headers": ["Content-Type"],
-        "methods": ["GET", "POST", "OPTIONS"]
-    }
-})
+# Enable CORS for frontend on GitHub Pages
+FRONTEND_URL = config.get('FRONTEND_URL', 'https://gbonez.org')
+CORS(app, 
+     supports_credentials=True, 
+     origins=[FRONTEND_URL, "http://localhost:*"],
+     allow_headers=["Content-Type"],
+     methods=["GET", "POST", "OPTIONS"],
+     expose_headers=["Set-Cookie"])
 
 # Spotify OAuth configuration
 SPOTIFY_CLIENT_ID = config.get('SPOTIFY_CLIENT_ID')
 SPOTIFY_CLIENT_SECRET = config.get('SPOTIFY_CLIENT_SECRET')
 BASE_URL = config.get('BASE_URL', 'https://release-radar-scripts-production.up.railway.app')
-SPOTIFY_REDIRECT_URI = f"{BASE_URL}/callback"
+# OAuth callback redirects back to GitHub Pages
+SPOTIFY_REDIRECT_URI = f"{FRONTEND_URL}/callback"
 
 # Set environment variables for the lite script to use
 if config.get('LASTFM_API_KEY'):
@@ -86,8 +87,12 @@ def get_spotify_client(token_info):
 
 @app.route('/')
 def index():
-    """Serve the static frontend HTML"""
-    return app.send_static_file('index.html')
+    """API root endpoint"""
+    return jsonify({
+        'service': 'Music Discovery API',
+        'status': 'running',
+        'frontend': FRONTEND_URL
+    })
 
 @app.route('/api/auth/status')
 def auth_status():
@@ -110,39 +115,43 @@ def auth_status():
     
     return jsonify({'authenticated': False}), 401
 
-@app.route('/login')
+@app.route('/api/login')
 def login():
-    """Start Spotify OAuth flow"""
+    """Generate Spotify OAuth URL for frontend to use"""
     sp_oauth = create_spotify_oauth()
     auth_url = sp_oauth.get_authorize_url()
-    return redirect(auth_url)
+    return jsonify({'auth_url': auth_url})
 
 @app.route('/callback')
 def callback():
-    """Handle Spotify OAuth callback"""
+    """Handle Spotify OAuth callback and redirect back to frontend"""
     sp_oauth = create_spotify_oauth()
-    session.clear()
     
     code = request.args.get('code')
+    error = request.args.get('error')
+    
+    if error:
+        # Redirect to frontend with error
+        return redirect(f"{FRONTEND_URL}/login?error={error}")
+    
     if not code:
-        flash('Authorization failed. Please try again.', 'error')
-        return redirect(url_for('index'))
+        return redirect(f"{FRONTEND_URL}/login?error=no_code")
     
     try:
         token_info = sp_oauth.get_access_token(code)
         session['token_info'] = token_info
-        flash('Successfully logged in with Spotify!', 'success')
-        return redirect(url_for('index'))
+        
+        # Redirect back to frontend dashboard
+        return redirect(f"{FRONTEND_URL}/dashboard")
     except Exception as e:
-        flash(f'Login failed: {str(e)}', 'error')
-        return redirect(url_for('index'))
+        print(f"OAuth error: {e}")
+        return redirect(f"{FRONTEND_URL}/login?error=auth_failed")
 
-@app.route('/logout')
+@app.route('/api/logout')
 def logout():
     """Clear session and logout"""
     session.clear()
-    flash('Successfully logged out.', 'success')
-    return redirect(url_for('index'))
+    return jsonify({'success': True, 'message': 'Logged out successfully'})
 
 @app.route('/api/playlists')
 def get_playlists():

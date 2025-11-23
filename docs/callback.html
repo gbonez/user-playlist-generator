@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Discovery - Authenticating...</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="container">
+        <div class="login-page">
+            <div class="logo">🎵</div>
+            <h1>Authenticating...</h1>
+            <p class="subtitle">Please wait while we complete your login</p>
+
+            <div class="loading-spinner"></div>
+        </div>
+    </div>
+
+    <style>
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: #1db954;
+            animation: spin 1s linear infinite;
+            margin: 2rem auto;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+
+    <script>
+        // This page handles the OAuth callback from Spotify
+        // The backend has already processed the OAuth code and set the session
+        // Just redirect to dashboard
+        setTimeout(() => {
+            window.location.href = '/dashboard';
+        }, 1000);
+    </script>
+</body>
+
+</html>

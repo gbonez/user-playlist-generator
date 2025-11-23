@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Discovery - Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="container">
+        <div class="dashboard-page">
+            <div class="header">
+                <div class="user-info">
+                    <div class="logo-small">🎵</div>
+                    <div>
+                        <h2 id="userName">Welcome!</h2>
+                        <button onclick="logout()" class="btn-text">Logout</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dashboard-content">
+                <h1>Discover New Music</h1>
+                <p class="subtitle">Add fresh tracks to your playlist automatically</p>
+
+                <div class="form-card">
+                    <div class="form-group">
+                        <label for="playlistSelect">Select Playlist</label>
+                        <select id="playlistSelect" class="input">
+                            <option value="">Loading playlists...</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="maxSongs">Number of Songs (1-50)</label>
+                        <input type="number" id="maxSongs" class="input" min="1" max="50" value="10">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="lastfmUsername">Last.fm Username (Optional)</label>
+                        <input type="text" id="lastfmUsername" class="input" placeholder="Your Last.fm username">
+                    </div>
+
+                    <button onclick="startDiscovery()" id="startBtn" class="btn-primary">
+                        Start Discovery
+                    </button>
+                </div>
+
+                <div id="progressSection" class="progress-section hidden">
+                    <h3>Discovery in Progress...</h3>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <p id="statusMessage" class="status-message">Starting...</p>
+                    <div id="resultDetails" class="result-details hidden"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'https://release-radar-scripts-production.up.railway.app';
+        let currentJobId = null;
+        let statusCheckInterval = null;
+
+        // Check authentication on page load
+        window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const response = await fetch(`${API_URL}/api/auth/status`, {
+                    credentials: 'include'
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.authenticated && data.user) {
+                        document.getElementById('userName').textContent = `Welcome, ${data.user.display_name}!`;
+                        loadPlaylists();
+                    } else {
+                        window.location.href = '/login';
+                    }
+                } else {
+                    window.location.href = '/login';
+                }
+            } catch (error) {
+                console.error('Auth check error:', error);
+                window.location.href = '/login';
+            }
+        });
+
+        async function logout() {
+            try {
+                await fetch(`${API_URL}/api/logout`, {
+                    credentials: 'include'
+                });
+            } catch (error) {
+                console.error('Logout error:', error);
+            }
+
+            if (statusCheckInterval) {
+                clearInterval(statusCheckInterval);
+            }
+
+            window.location.href = '/login';
+        }
+
+        async function loadPlaylists() {
+            const select = document.getElementById('playlistSelect');
+            select.innerHTML = '<option value="">Loading playlists...</option>';
+
+            try {
+                const response = await fetch(`${API_URL}/api/playlists`, {
+                    credentials: 'include'
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to load playlists');
+                }
+
+                const data = await response.json();
+
+                if (data.playlists && data.playlists.length > 0) {
+                    select.innerHTML = '<option value="">Select a playlist...</option>';
+
+                    data.playlists.forEach(playlist => {
+                        const option = document.createElement('option');
+                        option.value = playlist.id;
+                        option.textContent = `${playlist.name} (${playlist.tracks_total} tracks)${playlist.is_owner ? '' : ' - Collaborative'}`;
+                        select.appendChild(option);
+                    });
+                } else {
+                    select.innerHTML = '<option value="">No playlists found</option>';
+                }
+            } catch (error) {
+                console.error('Error loading playlists:', error);
+                select.innerHTML = '<option value="">Error loading playlists</option>';
+            }
+        }
+
+        async function startDiscovery() {
+            const playlistId = document.getElementById('playlistSelect').value;
+            const maxSongs = parseInt(document.getElementById('maxSongs').value);
+            const lastfmUsername = document.getElementById('lastfmUsername').value.trim();
+
+            if (!playlistId) {
+                alert('Please select a playlist');
+                return;
+            }
+
+            if (maxSongs < 1 || maxSongs > 50) {
+                alert('Number of songs must be between 1 and 50');
+                return;
+            }
+
+            const startBtn = document.getElementById('startBtn');
+            startBtn.disabled = true;
+            startBtn.textContent = 'Starting...';
+
+            const progressSection = document.getElementById('progressSection');
+            progressSection.classList.remove('hidden');
+            document.getElementById('resultDetails').classList.add('hidden');
+
+            try {
+                const response = await fetch(`${API_URL}/api/run_script`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        playlist_id: playlistId,
+                        max_songs: maxSongs,
+                        lastfm_username: lastfmUsername || null
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to start discovery');
+                }
+
+                const data = await response.json();
+                currentJobId = data.job_id;
+
+                document.getElementById('statusMessage').textContent = 'Discovery started! Finding new music...';
+                document.getElementById('progressFill').style.width = '30%';
+
+                statusCheckInterval = setInterval(() => checkJobStatus(currentJobId), 2000);
+
+            } catch (error) {
+                console.error('Error starting discovery:', error);
+                alert(error.message);
+
+                startBtn.disabled = false;
+                startBtn.textContent = 'Start Discovery';
+                progressSection.classList.add('hidden');
+            }
+        }
+
+        async function checkJobStatus(jobId) {
+            try {
+                const response = await fetch(`${API_URL}/api/job_status/${jobId}`, {
+                    credentials: 'include'
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to get job status');
+                }
+
+                const job = await response.json();
+
+                if (job.status === 'running') {
+                    document.getElementById('statusMessage').textContent = 'Analyzing your music taste and finding new tracks...';
+                    document.getElementById('progressFill').style.width = '60%';
+                } else if (job.status === 'completed') {
+                    clearInterval(statusCheckInterval);
+                    statusCheckInterval = null;
+
+                    document.getElementById('progressFill').style.width = '100%';
+                    document.getElementById('statusMessage').textContent = 'Discovery completed!';
+
+                    if (job.result) {
+                        showResults(job.result);
+                    }
+
+                    const startBtn = document.getElementById('startBtn');
+                    startBtn.disabled = false;
+                    startBtn.textContent = 'Start Discovery';
+
+                } else if (job.status === 'failed') {
+                    clearInterval(statusCheckInterval);
+                    statusCheckInterval = null;
+
+                    alert(job.error || 'Discovery failed. Please try again.');
+
+                    const startBtn = document.getElementById('startBtn');
+                    startBtn.disabled = false;
+                    startBtn.textContent = 'Start Discovery';
+
+                    document.getElementById('progressSection').classList.add('hidden');
+                }
+
+            } catch (error) {
+                console.error('Error checking job status:', error);
+                clearInterval(statusCheckInterval);
+                statusCheckInterval = null;
+                alert('Lost connection to server. Please refresh and try again.');
+            }
+        }
+
+        function showResults(result) {
+            const resultDetails = document.getElementById('resultDetails');
+            resultDetails.classList.remove('hidden');
+
+            let html = '<h4>✨ Discovery Complete!</h4><ul>';
+
+            if (result.tracks_added !== undefined) {
+                html += `<li>Added ${result.tracks_added} new tracks</li>`;
+            }
+
+            if (result.tracks_removed !== undefined) {
+                html += `<li>Removed ${result.tracks_removed} old tracks (7+ days)</li>`;
+            }
+
+            if (result.message) {
+                html += `<li>${result.message}</li>`;
+            }
+
+            html += '</ul>';
+            resultDetails.innerHTML = html;
+        }
+    </script>
+</body>
+
+</html>
