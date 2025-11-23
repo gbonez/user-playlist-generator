@@ -90,9 +90,10 @@
             || window.location.protocol === 'file:';
 
         // Backend API URL (only for actual API calls like fetching playlists, running scripts)
+        // Use app.gbonez.org since that's what's configured in Railway's BASE_URL
         const API_URL = isLocal
             ? 'http://localhost:5001'
-            : 'https://release-radar-scripts-production.up.railway.app';
+            : 'https://app.gbonez.org';
 
         // Spotify OAuth configuration
         const SPOTIFY_CLIENT_ID = 'da06cf57559f4a4d84298837e7000103';
