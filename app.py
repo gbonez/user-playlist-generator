@@ -175,6 +175,7 @@ def callback():
     
     try:
         print("🔐 Exchanging code for token...")
+        print(f"🔧 Using redirect_uri for token exchange: {SPOTIFY_REDIRECT_URI}")
         token_info = sp_oauth.get_access_token(code)
         
         # Store in session (for API calls from frontend)
@@ -194,9 +195,13 @@ def callback():
         # Frontend will extract token from URL and store in localStorage
         import urllib.parse
         redirect_url = f"{FRONTEND_URL}/callback.html?access_token={access_token}&refresh_token={urllib.parse.quote(refresh_token)}&expires_at={expires_at}"
+        print(f"🌐 Full redirect URL: {redirect_url[:100]}...")
         return redirect(redirect_url)
     except Exception as e:
         print(f"❌ OAuth error: {e}")
+        print(f"❌ Error type: {type(e).__name__}")
+        import traceback
+        print(f"❌ Traceback: {traceback.format_exc()}")
         print(f"➡️  Redirecting to: {FRONTEND_URL}/login.html?error=auth_failed")
         print("="*60 + "\n")
         return redirect(f"{FRONTEND_URL}/login.html?error=auth_failed")
