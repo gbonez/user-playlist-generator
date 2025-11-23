@@ -62,10 +62,8 @@
 
     <script>
         // Use localhost for local testing, Railway for production
-        // Use app.gbonez.org since that's what's configured in Railway's BASE_URL
-        const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-            ? 'http://localhost:5001'
-            : 'https://app.gbonez.org';
+        // Backend API URL - using Railway-provided domain
+        const API_URL = 'https://user-playlist-generator-production.up.railway.app';
 
         console.log('Using API URL:', API_URL);
         let currentJobId = null;

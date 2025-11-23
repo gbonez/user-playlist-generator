@@ -89,18 +89,16 @@
             || window.location.hostname === ''
             || window.location.protocol === 'file:';
 
-        // Backend API URL (only for actual API calls like fetching playlists, running scripts)
-        // Use app.gbonez.org since that's what's configured in Railway's BASE_URL
-        const API_URL = isLocal
-            ? 'http://localhost:5001'
-            : 'https://app.gbonez.org';
+        // Backend API URL - using Railway-provided domain
+        const API_URL = 'https://user-playlist-generator-production.up.railway.app';
 
         // Spotify OAuth configuration
-        const SPOTIFY_CLIENT_ID = 'da06cf57559f4a4d84298837e7000103';
+        const SPOTIFY_CLIENT_ID = '3efea884bdec4ef9b4bf3acd280c279f';
         // Spotify MUST redirect to BACKEND /callback (not frontend callback.html)
         // Backend exchanges code for token, sets session, then redirects to frontend dashboard
         const CALLBACK_URL = `${API_URL}/callback`;
-        const SCOPES = 'playlist-modify-public playlist-modify-private user-library-read';
+        // Use + instead of spaces for scope parameter (Spotify API requirement)
+        const SCOPES = 'playlist-modify-public+playlist-modify-private+user-library-read';
 
         console.log('Hostname:', window.location.hostname);
         console.log('Protocol:', window.location.protocol);
@@ -132,14 +130,13 @@
             console.log('🎯 API URL:', API_URL);
             console.log('🌐 Is Local:', isLocal);
 
-            // Build Spotify authorization URL
-            const authUrl = 'https://accounts.spotify.com/authorize?' + new URLSearchParams({
-                client_id: SPOTIFY_CLIENT_ID,
-                response_type: 'code',
-                redirect_uri: CALLBACK_URL,
-                scope: SCOPES,
-                show_dialog: 'true'
-            });
+            // Build Spotify authorization URL - DON'T encode scope, keep + signs as-is
+            const authUrl = 'https://accounts.spotify.com/authorize?' +
+                'client_id=' + encodeURIComponent(SPOTIFY_CLIENT_ID) +
+                '&response_type=code' +
+                '&redirect_uri=' + encodeURIComponent(CALLBACK_URL) +
+                '&scope=' + SCOPES +
+                '&show_dialog=true';
 
             console.log('🎵 Full Spotify Auth URL:', authUrl);
             console.log('➡️  Redirecting to Spotify...');
