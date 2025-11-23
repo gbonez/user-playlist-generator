@@ -195,14 +195,156 @@ def get_random_liked_track_for_artist(sp, artist_id):
         print(f"[ERROR] Error finding liked tracks for artist: {e}")
         return None
 
+def search_user_playlists_for_artist(sp, artist_id, artist_name, existing_artist_ids, liked_songs_artist_ids=None, max_follower_count=None, max_playlists=5):
+    """
+    Search user-created playlists containing the artist and try to find valid tracks
+    
+    Args:
+        sp: Spotify client
+        artist_id: The artist ID to search for
+        artist_name: The artist name (for search)
+        existing_artist_ids: Set of artist IDs already in the playlist
+        liked_songs_artist_ids: Set of artist IDs from user's liked songs (to exclude)
+        max_follower_count: Maximum artist follower count (None = no limit)
+        max_playlists: Maximum number of playlists to check (default 5)
+    
+    Returns:
+        Track object if found, None otherwise
+    """
+    print(f"[INFO] Searching user playlists for '{artist_name}'...")
+    
+    try:
+        # Search for playlists containing the artist name
+        candidate_playlists = []
+        seen_playlist_ids = set()
+        
+        # Fetch multiple pages to get variety
+        for page_offset in [0, 50, 100, 150]:
+            search_res = safe_spotify_call(sp.search, artist_name, type="playlist", limit=50, offset=page_offset)
+            if not search_res or "playlists" not in search_res or not search_res["playlists"].get("items"):
+                break
+            
+            for pl in search_res["playlists"]["items"]:
+                if not pl or not pl.get("id"):
+                    continue
+                
+                pid = pl["id"]
+                if pid in seen_playlist_ids:
+                    continue
+                    
+                seen_playlist_ids.add(pid)
+                candidate_playlists.append(pl)
+            
+            time.sleep(0.15)  # Rate limiting courtesy
+            
+            # Stop if we have enough candidates
+            if len(candidate_playlists) >= max_playlists * 3:
+                break
+        
+        if not candidate_playlists:
+            print(f"[INFO] No user playlists found for '{artist_name}'")
+            return None
+        
+        # Shuffle to avoid always checking the same popular playlists
+        random.shuffle(candidate_playlists)
+        
+        playlists_checked = 0
+        for pl in candidate_playlists:
+            if playlists_checked >= max_playlists:
+                break
+            
+            playlist_id = pl["id"]
+            playlist_name = pl.get("name", "<unknown>")
+            
+            # Fetch playlist items to verify artist is present
+            playlist_data = safe_spotify_call(
+                sp.playlist_items,
+                playlist_id,
+                fields="items(track(id,name,artists(id,name,followers)))",
+                limit=100
+            )
+            
+            if not playlist_data or "items" not in playlist_data:
+                print(f"[SKIP] Playlist '{playlist_name}' is empty or inaccessible")
+                continue
+            
+            # Verify the artist is actually in this playlist
+            contains_artist = False
+            for item in playlist_data["items"]:
+                track = item.get("track")
+                if not track:
+                    continue
+                
+                for artist in track.get("artists", []):
+                    if artist.get("id") == artist_id:
+                        contains_artist = True
+                        break
+                
+                if contains_artist:
+                    break
+            
+            if not contains_artist:
+                print(f"[SKIP] Playlist '{playlist_name}' doesn't actually contain '{artist_name}'")
+                continue
+            
+            # Count how many tracks by this artist are in the playlist
+            artist_track_count = sum(
+                1 for item in playlist_data["items"]
+                if item.get("track") and any(
+                    a.get("id") == artist_id for a in item["track"].get("artists", [])
+                )
+            )
+            
+            # Skip playlists dominated by this artist (likely artist-focused playlists)
+            if artist_track_count > 10:
+                print(f"[SKIP] Playlist '{playlist_name}' has too many tracks by '{artist_name}' ({artist_track_count})")
+                continue
+            
+            playlists_checked += 1
+            print(f"[INFO] Checking playlist '{playlist_name}' (contains {artist_track_count} tracks by '{artist_name}')...")
+            
+            # Try up to 10 times to find a valid track from this playlist
+            attempts = 0
+            max_attempts_per_playlist = 10
+            
+            while attempts < max_attempts_per_playlist:
+                attempts += 1
+                
+                if not playlist_data["items"]:
+                    break
+                
+                # Pick a random track from the playlist
+                item = random.choice(playlist_data["items"])
+                track = item.get("track")
+                
+                if not track or not track.get("id"):
+                    continue
+                
+                # Validate the track
+                if validate_track_lite(track, existing_artist_ids, liked_songs_artist_ids, max_follower_count):
+                    print(f"[SUCCESS] Found valid track from playlist '{playlist_name}': {track['name']} by {track['artists'][0]['name']}")
+                    return track
+            
+            print(f"[INFO] No valid tracks found in playlist '{playlist_name}' after {attempts} attempts")
+        
+        print(f"[INFO] Checked {playlists_checked} playlists, no valid tracks found")
+        return None
+        
+    except Exception as e:
+        print(f"[ERROR] Error searching user playlists: {e}")
+        return None
+
 def select_track_for_artist_lite(sp, artist_name, existing_artist_ids, liked_songs_artist_ids=None, max_follower_count=None):
     """
-    Real-time track selection using audio features for similarity matching
+    Real-time track selection following the exact strategy:
     
-    Strategy:
-    1. Get a random liked song from the artist
-    2. Use that song's audio features to find 10 similar tracks
-    3. If that fails, try Last.fm similar artists as fallback
+    Strategy (in order):
+    5a. Mathematical audio features check (like Chosic) using rolled artist's liked songs or top tracks as seeds
+    5b. Search user playlists containing the rolled artist (try 10 times per playlist, max 5 playlists)
+    5c. Last.fm similar artists as fallback
+    5d. Try generating with artist as seed up to 10 times
+    
+    Returns None if all methods fail (will trigger re-roll)
     
     Args:
         max_follower_count: Maximum artist follower count for recommendations (None = no limit)
@@ -216,13 +358,26 @@ def select_track_for_artist_lite(sp, artist_name, existing_artist_ids, liked_son
     
     artist_results = search_res["artists"]["items"]
     artist_id = artist_results[0]["id"]
+    
+    print(f"[INFO] === Starting track discovery for '{artist_name}' ===")
 
-    # Step 1: Try audio feature matching with a liked song from this artist
-    print(f"[INFO] Looking for recommendations similar to '{artist_name}' using audio features...")
+    # ===== STEP 5a: Mathematical audio features check (like Chosic) =====
+    print(f"[5a] Trying mathematical audio features matching for '{artist_name}'...")
+    
+    # Try to get a seed track from user's liked songs by this artist
     seed_track_id = get_random_liked_track_for_artist(sp, artist_id)
     
+    # If no liked song, try artist's top tracks as fallback seed
+    if not seed_track_id:
+        print(f"[INFO] No liked tracks found for '{artist_name}', trying top tracks as seed...")
+        top_tracks_res = safe_spotify_call(sp.artist_top_tracks, artist_id, country="US")
+        if top_tracks_res and "tracks" in top_tracks_res and top_tracks_res["tracks"]:
+            seed_track = random.choice(top_tracks_res["tracks"])
+            seed_track_id = seed_track.get("id")
+            print(f"[INFO] Using top track '{seed_track.get('name')}' as seed")
+    
     if seed_track_id:
-        print(f"[INFO] Using liked track {seed_track_id[:10]}... as seed for audio feature matching")
+        print(f"[INFO] Using seed track {seed_track_id[:10]}... for audio feature matching")
         similar_tracks = get_similar_tracks_by_audio_features(
             sp, 
             seed_track_id, 
@@ -233,13 +388,33 @@ def select_track_for_artist_lite(sp, artist_name, existing_artist_ids, liked_son
         )
         
         if similar_tracks:
-            # Return the first valid track from the batch
+            print(f"[SUCCESS] Found track via audio features: {similar_tracks[0]['name']} by {similar_tracks[0]['artists'][0]['name']}")
             return similar_tracks[0]
     else:
-        print(f"[INFO] No liked tracks found for '{artist_name}'")
+        print(f"[INFO] No seed track available for '{artist_name}'")
+    
+    print(f"[5a] Audio features matching failed for '{artist_name}'")
 
-    # Step 2: Last.fm similar artists as fallback (only if no audio feature matches found)
-    print(f"[INFO] No audio feature matches found. Trying Last.fm similar artists for '{artist_name}'...")
+    # ===== STEP 5b: Search user playlists =====
+    print(f"[5b] Searching user playlists for '{artist_name}'...")
+    playlist_track = search_user_playlists_for_artist(
+        sp, 
+        artist_id, 
+        artist_name, 
+        existing_artist_ids, 
+        liked_songs_artist_ids, 
+        max_follower_count,
+        max_playlists=5
+    )
+    
+    if playlist_track:
+        print(f"[SUCCESS] Found track via user playlists: {playlist_track['name']} by {playlist_track['artists'][0]['name']}")
+        return playlist_track
+    
+    print(f"[5b] User playlist search failed for '{artist_name}'")
+
+    # ===== STEP 5c: Last.fm similar artists =====
+    print(f"[5c] Trying Last.fm similar artists for '{artist_name}'...")
     if LASTFM_API_KEY:
         try:
             url = "http://ws.audioscrobbler.com/2.0/"
@@ -248,7 +423,7 @@ def select_track_for_artist_lite(sp, artist_name, existing_artist_ids, liked_son
                 "artist": artist_name, 
                 "api_key": LASTFM_API_KEY, 
                 "format": "json", 
-                "limit": 5
+                "limit": 10
             }
             response = requests.get(url, params=params, timeout=10)
             data = response.json()
@@ -257,15 +432,63 @@ def select_track_for_artist_lite(sp, artist_name, existing_artist_ids, liked_son
                 similar_artists = data["similarartists"]["artist"]
                 random.shuffle(similar_artists)
                 
-                for sim_artist in similar_artists[:3]:  # Reduced for lite version
+                for sim_artist in similar_artists[:5]:
                     sim_name = sim_artist.get("name", "").strip()
-                    if sim_name:
-                        track = select_track_for_artist_lite(sp, sim_name, existing_artist_ids, liked_songs_artist_ids, max_follower_count)
-                        if track:
+                    if not sim_name:
+                        continue
+                    
+                    # Search for similar artist
+                    sim_search = safe_spotify_call(sp.search, sim_name, type="artist", limit=1)
+                    if not sim_search or "artists" not in sim_search or not sim_search["artists"].get("items"):
+                        continue
+                    
+                    sim_artist_data = sim_search["artists"]["items"][0]
+                    sim_artist_id = sim_artist_data.get("id")
+                    
+                    # Get top tracks from similar artist
+                    top_tracks_res = safe_spotify_call(sp.artist_top_tracks, sim_artist_id, country="US")
+                    if not top_tracks_res or "tracks" not in top_tracks_res:
+                        continue
+                    
+                    # Try each top track
+                    for track in top_tracks_res["tracks"][:3]:
+                        if validate_track_lite(track, existing_artist_ids, liked_songs_artist_ids, max_follower_count):
+                            print(f"[SUCCESS] Found track via Last.fm similar artist: {track['name']} by {track['artists'][0]['name']}")
                             return track
         except Exception as e:
             print(f"[ERROR] Last.fm lookup failed: {e}")
+    else:
+        print(f"[INFO] Last.fm API key not available, skipping")
+    
+    print(f"[5c] Last.fm similar artists failed for '{artist_name}'")
 
+    # ===== STEP 5d: Try generating with artist as seed (last resort) =====
+    print(f"[5d] Trying seed generation with artist ID as seed for '{artist_name}'...")
+    
+    for attempt in range(10):
+        try:
+            recs = safe_spotify_call(
+                sp.recommendations,
+                seed_artists=[artist_id],
+                limit=50
+            )
+            
+            if not recs or "tracks" not in recs:
+                continue
+            
+            # Validate tracks
+            for track in recs["tracks"]:
+                if validate_track_lite(track, existing_artist_ids, liked_songs_artist_ids, max_follower_count):
+                    print(f"[SUCCESS] Found track via artist seed (attempt {attempt + 1}): {track['name']} by {track['artists'][0]['name']}")
+                    return track
+            
+            print(f"[INFO] Attempt {attempt + 1}/10: No valid tracks from artist seed recommendations")
+            
+        except Exception as e:
+            print(f"[ERROR] Seed generation attempt {attempt + 1} failed: {e}")
+    
+    print(f"[5d] Seed generation failed after 10 attempts for '{artist_name}'")
+    print(f"[FAIL] All methods exhausted for '{artist_name}' - will re-roll")
     return None
 
 def fetch_all_recent_tracks(username=None, api_key=None):
@@ -393,6 +616,7 @@ def build_artist_play_map(recent_tracks, days_limit=365):
 def build_artist_list_from_liked_songs(sp, artist_play_map=None):
     """
     Build fresh artist list from user's current liked songs
+    Filters to only include artists with listening activity in last 6 months
     Returns dict of {artist_id: {name, total_liked, weight}}
     """
     print("[INFO] Building artist list from liked songs...")
@@ -433,6 +657,33 @@ def build_artist_list_from_liked_songs(sp, artist_play_map=None):
         
         print(f"[INFO] Found {len(artist_counts)} unique artists in liked songs")
         
+        # Filter to only artists with listening activity in last 6 months
+        # Spotify's medium_term is approximately 6 months, which is the closest metric available
+        print("[INFO] Filtering artists by recent listening activity (last 6 months)...")
+        artists_with_recent_activity = set()
+        
+        # If artist_play_map provided (from Spotify listening data), it already contains 6-month data
+        if artist_play_map:
+            for artist_name_lower in artist_play_map.keys():
+                # Find matching artist_id from artist_counts
+                for artist_id, info in artist_counts.items():
+                    if info["name"].lower() == artist_name_lower:
+                        artists_with_recent_activity.add(artist_id)
+                        break
+        
+        # Filter artist_counts to only include recently active artists
+        if artists_with_recent_activity:
+            original_count = len(artist_counts)
+            artist_counts = {
+                aid: info for aid, info in artist_counts.items() 
+                if aid in artists_with_recent_activity
+            }
+            filtered_count = original_count - len(artist_counts)
+            print(f"[INFO] Filtered out {filtered_count} artists without recent listening activity (6 months)")
+            print(f"[INFO] {len(artist_counts)} artists remaining with recent activity")
+        else:
+            print("[WARN] No listening data available - including all artists from liked songs")
+        
         # Calculate weights based on how many songs user has liked
         for artist_id, info in artist_counts.items():
             total_liked = info["total_liked"]
@@ -448,9 +699,12 @@ def build_artist_list_from_liked_songs(sp, artist_play_map=None):
             else:
                 base_weight = 1
             
-            # Boost if in Last.fm history
+            # Boost if in listening history (applies additional weight to frequently played)
             if artist_play_map and artist_name_lower in artist_play_map:
-                base_weight *= 1.5
+                play_count = artist_play_map[artist_name_lower]
+                # Scale boost based on play count (capped at 2x)
+                boost = min(1.5 + (play_count / 20), 2.0)
+                base_weight *= boost
             
             info["weight"] = base_weight
         
@@ -637,22 +891,39 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, 
         # Select artists and find tracks using weighted lottery
         selected_tracks = []
         attempts = 0
-        max_attempts = max_songs * 5  # Allow more attempts than target
+        max_attempts = max_songs * 10  # Allow more attempts since we're re-rolling on failure
         
         # Build weight lists for weighted selection
         artist_ids = list(artists_data.keys())
         artist_weights = [artists_data[aid]["weight"] for aid in artist_ids]
         
+        # Track which artists have been rolled (never roll same artist twice)
+        rolled_artist_ids = set()
+        
         while len(selected_tracks) < max_songs and attempts < max_attempts:
             attempts += 1
             
+            # Check if we have any artists left to roll
+            available_artists = [aid for aid in artist_ids if aid not in rolled_artist_ids]
+            if not available_artists:
+                print("[WARN] All artists have been rolled, cannot find more tracks")
+                break
+            
             try:
-                # Weighted random selection from liked songs artists
-                selected_aid = random.choices(artist_ids, weights=artist_weights, k=1)[0]
+                # Weighted random selection from liked songs artists (excluding already rolled)
+                available_weights = [
+                    artist_weights[artist_ids.index(aid)] 
+                    for aid in available_artists
+                ]
+                
+                selected_aid = random.choices(available_artists, weights=available_weights, k=1)[0]
                 artist_info = artists_data[selected_aid]
                 artist_name = artist_info.get("name", "")
                 
-                print(f"[INFO] Attempt {attempts}: Searching for similar tracks to '{artist_name}' (liked {artist_info['total_liked']} songs)")
+                # Mark this artist as rolled (can never be rolled again)
+                rolled_artist_ids.add(selected_aid)
+                
+                print(f"\n[LOTTERY] Attempt {attempts}: Rolled '{artist_name}' (liked {artist_info['total_liked']} songs, {len(available_artists)-1} artists remaining)")
                 
                 # Find tracks by similar artists (NOT by the selected artist themselves)
                 track = select_track_for_artist_lite(sp, artist_name, existing_artist_ids, liked_songs_artist_ids, max_follower_count)
@@ -663,11 +934,10 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, 
                     for artist in track["artists"]:
                         if artist.get("id"):
                             existing_artist_ids.add(artist["id"])
-                    print(f"[SUCCESS] Found track {len(selected_tracks)}/{max_songs}: {track['name']} by {track['artists'][0]['name']}")
+                    print(f"[SUCCESS] ✓ Found track {len(selected_tracks)}/{max_songs}: {track['name']} by {track['artists'][0]['name']}\n")
                 else:
-                    # Reduce weight for this artist if no track found
-                    idx = artist_ids.index(selected_aid)
-                    artist_weights[idx] *= 0.5
+                    print(f"[FAIL] ✗ All methods exhausted for '{artist_name}' - re-rolling lottery\n")
+                    # Artist stays in rolled_artist_ids, will never be rolled again
                     
             except Exception as e:
                 print(f"[ERROR] Error selecting track: {e}")
