@@ -61,7 +61,7 @@ app.config['SESSION_COOKIE_DOMAIN'] = '.gbonez.org' if not is_local_environment(
 CORS(app, 
      supports_credentials=True, 
      origins=[FRONTEND_URL, "http://localhost:*", "https://gbonez.github.io"],
-     allow_headers=["Content-Type"],
+     allow_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "OPTIONS"],
      expose_headers=["Set-Cookie"])
 
@@ -255,6 +255,7 @@ def run_script():
     playlist_id = data.get('playlist_id')
     max_songs = int(data.get('max_songs', 10))
     lastfm_username = data.get('lastfm_username', '').strip()
+    max_follower_count = data.get('max_follower_count')  # Can be None for no limit
     
     if not playlist_id:
         return jsonify({'error': 'Playlist ID is required'}), 400
@@ -289,6 +290,7 @@ def run_script():
             'playlist_name': playlist_info['name'],
             'max_songs': max_songs,
             'lastfm_username': lastfm_username if lastfm_username else None,
+            'max_follower_count': max_follower_count,
             'started_at': time.time(),
             'result': None,
             'error': None
@@ -304,7 +306,8 @@ def run_script():
                     sp=sp,
                     output_playlist_id=playlist_id,
                     max_songs=max_songs,
-                    lastfm_username=lastfm_username if lastfm_username else None
+                    lastfm_username=lastfm_username if lastfm_username else None,
+                    max_follower_count=max_follower_count
                 )
                 
                 running_jobs[job_id]['result'] = result

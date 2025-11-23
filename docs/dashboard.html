@@ -55,6 +55,19 @@
                     </div>
 
                     <div class="form-group">
+                        <label for="nicheLevel">Artist Discovery Level: <span
+                                id="nicheLevelText">Balanced</span></label>
+                        <input type="range" id="nicheLevel" min="1" max="5" value="3"
+                            oninput="updateNicheLevelText(this.value)"
+                            style="width: 100%; height: 8px; border-radius: 4px; background: linear-gradient(to right, #1db954, #9333ea); cursor: pointer; -webkit-appearance: none; appearance: none;">
+                        <div
+                            style="display: flex; justify-content: space-between; font-size: 0.75rem; color: rgba(255, 255, 255, 0.6); margin-top: 4px;">
+                            <span>Popular</span>
+                            <span>Very Niche</span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
                         <label for="lastfmUsername">Last.fm Username (Optional)</label>
                         <input type="text" id="lastfmUsername" class="input" placeholder="Your Last.fm username">
                     </div>
@@ -181,6 +194,33 @@
             playlistGroup.style.display = createNew ? 'none' : 'block';
         }
 
+        function updateNicheLevelText(value) {
+            const labels = {
+                '1': 'Popular',
+                '2': 'Somewhat Popular',
+                '3': 'Balanced',
+                '4': 'Niche',
+                '5': 'Very Niche'
+            };
+            document.getElementById('nicheLevelText').textContent = labels[value];
+        }
+
+        function getNicheFollowerCount(level) {
+            // Level 1 (Popular): No limit (return None/null)
+            // Level 2: 100,000 followers
+            // Level 3: 75,000 followers (balanced)
+            // Level 4: 50,000 followers (niche)
+            // Level 5: 25,000 followers (very niche - half of original)
+            const followerLimits = {
+                '1': null,
+                '2': 100000,
+                '3': 75000,
+                '4': 50000,
+                '5': 25000
+            };
+            return followerLimits[level];
+        }
+
         async function logout() {
             // Clear token from localStorage
             localStorage.removeItem('spotify_token_info');
@@ -234,6 +274,8 @@
             let playlistId = document.getElementById('playlistSelect').value;
             const maxSongs = parseInt(document.getElementById('maxSongs').value);
             const lastfmUsername = document.getElementById('lastfmUsername').value.trim();
+            const nicheLevel = document.getElementById('nicheLevel').value;
+            const maxFollowers = getNicheFollowerCount(nicheLevel);
 
             if (maxSongs < 1 || maxSongs > 50) {
                 alert('Number of songs must be between 1 and 50');
@@ -293,7 +335,8 @@
                     body: JSON.stringify({
                         playlist_id: playlistId,
                         max_songs: maxSongs,
-                        lastfm_username: lastfmUsername || null
+                        lastfm_username: lastfmUsername || null,
+                        max_follower_count: maxFollowers
                     })
                 });
 
@@ -305,8 +348,8 @@
                 const data = await response.json();
                 currentJobId = data.job_id;
 
-                document.getElementById('statusMessage').textContent = 'Discovery started! Finding new music...';
-                document.getElementById('progressFill').style.width = '30%';
+                document.getElementById('statusMessage').textContent = 'Your playlist will be generated soon! Discovering tracks...';
+                document.getElementById('progressFill').style.width = '50%';
 
                 statusCheckInterval = setInterval(() => checkJobStatus(currentJobId), 2000);
 

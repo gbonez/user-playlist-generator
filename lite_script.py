@@ -9,66 +9,13 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 from spotipy.exceptions import SpotifyException
 
-# Selenium for scraping
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-
 # ==== LITE SCRIPT CONFIG ====
-# This is a simplified version without database operations, SMS, and whitelist functionality
-ARTISTS_FILE = "artists.json"
-OUTPUT_FILE = "rolled_tracks.json"
+# This is a real-time version without any caching or data storage
+# Each run scans liked songs fresh and generates recommendations
 
 LASTFM_API_KEY = os.environ.get("LASTFM_API_KEY")
-LASTFM_USERNAME = os.environ.get("LASTFM_USERNAME")
 
-scope = "playlist-modify-public playlist-modify-private user-library-read"
-
-# ==== GLOBAL DRIVER FOR SCRAPING ====
-global_driver = None
-def get_global_driver():
-    global global_driver
-    if global_driver is None:
-        chrome_bin = os.environ.get("CHROME_BIN")
-        chromedriver_path = os.environ.get("CHROMEDRIVER_PATH")
-
-        options = webdriver.ChromeOptions()
-        if chrome_bin:
-            options.binary_location = chrome_bin
-        # fallback to legacy headless flag if new not supported
-        try:
-            options.add_argument("--headless=new")
-        except Exception:
-            options.add_argument("--headless")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-
-        # try to use chromedriver-binary if no explicit path provided
-        if not chromedriver_path:
-            try:
-                import chromedriver_binary  # installs and exposes binary_path
-                chromedriver_path = getattr(chromedriver_binary, "binary_path", None)
-            except Exception:
-                chromedriver_path = None
-
-        if not chromedriver_path:
-            raise RuntimeError("CHROMEDRIVER_PATH (or chromedriver-binary) is required to start the Chrome driver")
-
-        service = Service(chromedriver_path)
-        global_driver = webdriver.Chrome(service=service, options=options)
-    return global_driver
-
-def close_global_driver():
-    global global_driver
-    if global_driver:
-        global_driver.quit()
-        global_driver = None
+scope = "playlist-modify-public playlist-modify-private user-library-read user-read-recently-played user-top-read"
 
 # ==== HELPER FUNCTIONS ====
 def safe_spotify_call(func, *args, **kwargs):
@@ -98,133 +45,168 @@ def safe_spotify_call(func, *args, **kwargs):
     print(f"[FAIL] {getattr(func,'__name__',str(func))} failed after {retries} retries")
     return None
 
-def get_random_track_from_playlist(sp, playlist_id, excluded_artist=None, max_followers=None, source_desc="", artists_data=None, existing_artist_ids=None, liked_songs_artist_ids=None):
-    consecutive_invalid = 0
-    for attempt in range(1, 21):
-        try:
-            # Get random track from playlist
-            playlist_data = safe_spotify_call(sp.playlist, playlist_id)
-            if not playlist_data or playlist_data.get("tracks", {}).get("total", 0) == 0:
-                print(f"[SKIP] Empty or invalid playlist {source_desc}")
-                return None
-
-            total_tracks = playlist_data["tracks"]["total"]
-            random_offset = random.randint(0, max(0, total_tracks - 1))
-            
-            track_data = safe_spotify_call(sp.playlist_items, playlist_id, offset=random_offset, limit=1)
-            if not track_data or not track_data.get("items"):
-                consecutive_invalid += 1
-                if consecutive_invalid >= 5:
-                    print(f"[SKIP] Too many consecutive invalid tracks in {source_desc}")
-                    return None
-                continue
-
-            track_item = track_data["items"][0]
-            track = track_item.get("track")
-            
-            if not track or track.get("type") != "track":
-                consecutive_invalid += 1
-                continue
-
-            # Validate track (simplified validation without DB checks)
-            if validate_track_lite(track, artists_data, existing_artist_ids, max_followers, sp, liked_songs_artist_ids):
-                print(f"[SUCCESS] Found valid track from {source_desc}: {track['name']} by {track['artists'][0]['name']}")
-                return track
-            else:
-                consecutive_invalid += 1
-
-        except Exception as e:
-            print(f"[ERROR] Error getting track from {source_desc}: {e}")
-            consecutive_invalid += 1
-
-        if consecutive_invalid >= 10:
-            print(f"[SKIP] Too many consecutive failures for {source_desc}")
-            break
-
-    return None
-
-def validate_track_lite(track, artists_data, existing_artist_ids=None, max_followers=None, sp=None, liked_songs_artist_ids=None):
+def validate_track_lite(track, existing_artist_ids=None, liked_songs_artist_ids=None, max_follower_count=None):
     """
-    Simplified validation without database checks
-    Now includes check against user's liked songs artists
+    Real-time validation based on current liked songs and playlist state
+    No caching or stored data used
+    
+    Args:
+        max_follower_count: Maximum artist follower count (None = no limit)
     """
     if not track or "artists" not in track or not track["artists"]:
         return False
 
     artist = track["artists"][0]
     aid = artist.get("id")
-    name_lower = (artist.get("name") or "").lower()
+    artist_name = artist.get("name", "Unknown")
 
-    # 1. Check if artist appears in user's liked songs (NEW CHECK)
-    if liked_songs_artist_ids and aid in liked_songs_artist_ids:
-        print(f"[SKIP] Artist '{artist.get('name')}' appears in liked songs - skipping")
-        return False
-
-    # 2. Check against local artists.json if provided
-    if artists_data:
-        artist_entry = artists_data.get(aid)
-        if artist_entry and int(artist_entry.get("total_liked", 0)) >= 3:
+    # 1. Check follower count if limit is set
+    if max_follower_count is not None:
+        follower_count = artist.get("followers", {}).get("total", 0)
+        if follower_count > max_follower_count:
+            print(f"[SKIP] Artist '{artist_name}' has {follower_count:,} followers (limit: {max_follower_count:,})")
             return False
 
-    # 3. Already in playlist
+    # 2. Check if artist appears in user's liked songs
+    if liked_songs_artist_ids and aid in liked_songs_artist_ids:
+        print(f"[SKIP] Artist '{artist_name}' appears in liked songs - skipping")
+        return False
+
+    # 3. Already in target playlist
     if existing_artist_ids and (aid in existing_artist_ids):
         return False
 
-    # 4. Max followers check
-    if max_followers and sp:
-        try:
-            artist_data = safe_spotify_call(sp.artist, aid)
-            if artist_data and artist_data.get("followers", {}).get("total", 0) > max_followers:
-                return False
-        except:
-            pass
-
     return True
 
-def scrape_artist_playlists(artist_id_or_url):
-    driver = get_global_driver()
-    playlists = []
-    try:
-        # Extract artist ID from URL if needed
-        if "open.spotify.com" in artist_id_or_url:
-            artist_id = artist_id_or_url.split("/")[-1].split("?")[0]
-        else:
-            artist_id = artist_id_or_url
-
-        url = f"https://open.spotify.com/artist/{artist_id}"
-        driver.get(url)
-        time.sleep(3)
-
-        # Find playlists featuring this artist
-        try:
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)
-            
-            # Look for playlist elements
-            soup = BeautifulSoup(driver.page_source, 'html.parser')
-            playlist_links = soup.find_all('a', href=True)
-            
-            for link in playlist_links:
-                href = link.get('href', '')
-                if '/playlist/' in href and href not in [p['url'] for p in playlists]:
-                    playlist_id = href.split('/playlist/')[-1].split('?')[0]
-                    playlists.append({
-                        'id': playlist_id,
-                        'url': href
-                    })
-        except Exception as e:
-            print(f"[WARNING] Error scraping playlists for artist {artist_id}: {e}")
-
-    except Exception as e:
-        print(f"[ERROR] Error scraping artist playlists: {e}")
+def get_similar_tracks_by_audio_features(sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids=None, max_follower_count=None, limit=10):
+    """
+    Find similar tracks using Spotify's audio features and recommendations API
     
-    return playlists
+    Args:
+        sp: Spotify client
+        seed_track_id: The track ID to use as seed for similarity matching
+        existing_artist_ids: Set of artist IDs already in the playlist
+        liked_songs_artist_ids: Set of artist IDs from user's liked songs (to exclude)
+        max_follower_count: Maximum artist follower count (None = no limit)
+        limit: Maximum number of similar tracks to find
+    
+    Returns:
+        List of valid track objects (up to limit)
+    """
+    try:
+        print(f"[INFO] Getting audio features for seed track {seed_track_id[:10]}...")
+        
+        # Get audio features for the seed track
+        features = safe_spotify_call(sp.audio_features, seed_track_id)
+        if not features or not features[0]:
+            print("[SKIP] Could not get audio features for seed track")
+            return []
+        
+        track_features = features[0]
+        
+        # Build recommendations using sonic profile
+        print(f"[INFO] Finding similar tracks (energy={track_features['energy']:.2f}, danceability={track_features['danceability']:.2f}, valence={track_features['valence']:.2f})...")
+        
+        recs = safe_spotify_call(
+            sp.recommendations,
+            seed_tracks=[seed_track_id],
+            limit=50,  # Get more to filter through
+            target_energy=track_features["energy"],
+            target_danceability=track_features["danceability"],
+            target_valence=track_features["valence"],
+            target_tempo=track_features["tempo"],
+            target_acousticness=track_features["acousticness"],
+            target_instrumentalness=track_features["instrumentalness"]
+        )
+        
+        if not recs or "tracks" not in recs:
+            print("[SKIP] No recommendations returned")
+            return []
+        
+        # Validate and collect tracks
+        valid_tracks = []
+        for track in recs["tracks"]:
+            if len(valid_tracks) >= limit:
+                break
+                
+            if validate_track_lite(track, existing_artist_ids, liked_songs_artist_ids, max_follower_count):
+                valid_tracks.append(track)
+                print(f"[SUCCESS] Found similar track: {track['name']} by {track['artists'][0]['name']}")
+                # Add artist to existing set to avoid duplicates in this batch
+                for artist in track["artists"]:
+                    if artist.get("id"):
+                        existing_artist_ids.add(artist["id"])
+        
+        print(f"[INFO] Found {len(valid_tracks)} valid similar tracks")
+        return valid_tracks
+        
+    except Exception as e:
+        print(f"[ERROR] Error finding similar tracks by audio features: {e}")
+        return []
 
-def select_track_for_artist_lite(sp, artist_name, artists_data, existing_artist_ids, liked_songs_artist_ids=None):
+def get_random_liked_track_for_artist(sp, artist_id):
     """
-    Simplified track selection without database operations
+    Get a random liked song from a specific artist
+    
+    Args:
+        sp: Spotify client
+        artist_id: The artist ID to find tracks for
+    
+    Returns:
+        Track ID of a random liked song by this artist, or None
     """
-    track = None
+    try:
+        # Scan through liked songs to find tracks by this artist
+        artist_tracks = []
+        offset = 0
+        limit = 50
+        
+        while True:
+            items = safe_spotify_call(sp.current_user_saved_tracks, limit=limit, offset=offset)
+            if not items or not items.get("items"):
+                break
+            
+            for item in items["items"]:
+                track = item.get("track")
+                if not track:
+                    continue
+                
+                # Check if any artist matches
+                for artist in track.get("artists", []):
+                    if artist.get("id") == artist_id:
+                        artist_tracks.append(track["id"])
+                        break
+            
+            # If we found some tracks, we can stop early (for performance)
+            if len(artist_tracks) >= 5:
+                break
+            
+            if len(items["items"]) < limit:
+                break
+            
+            offset += limit
+        
+        if artist_tracks:
+            return random.choice(artist_tracks)
+        
+        return None
+        
+    except Exception as e:
+        print(f"[ERROR] Error finding liked tracks for artist: {e}")
+        return None
+
+def select_track_for_artist_lite(sp, artist_name, existing_artist_ids, liked_songs_artist_ids=None, max_follower_count=None):
+    """
+    Real-time track selection using audio features for similarity matching
+    
+    Strategy:
+    1. Get a random liked song from the artist
+    2. Use that song's audio features to find 10 similar tracks
+    3. If that fails, try Last.fm similar artists as fallback
+    
+    Args:
+        max_follower_count: Maximum artist follower count for recommendations (None = no limit)
+    """
     
     # Get artist info
     search_res = safe_spotify_call(sp.search, artist_name, type="artist", limit=1)
@@ -235,81 +217,29 @@ def select_track_for_artist_lite(sp, artist_name, artists_data, existing_artist_
     artist_results = search_res["artists"]["items"]
     artist_id = artist_results[0]["id"]
 
-    # Step 1: Try artist playlists
-    print(f"[INFO] Looking for tracks by '{artist_name}' in artist playlists...")
-    scraped_playlists = scrape_artist_playlists(artist_id)
+    # Step 1: Try audio feature matching with a liked song from this artist
+    print(f"[INFO] Looking for recommendations similar to '{artist_name}' using audio features...")
+    seed_track_id = get_random_liked_track_for_artist(sp, artist_id)
     
-    for pl in scraped_playlists[:5]:  # Limit to first 5 playlists
-        try:
-            track = get_random_track_from_playlist(
-                sp, pl['id'], 
-                excluded_artist=None,
-                max_followers=None,
-                source_desc=f"artist playlist {pl['id'][:10]}...",
-                artists_data=artists_data,
-                existing_artist_ids=existing_artist_ids,
-                liked_songs_artist_ids=liked_songs_artist_ids
-            )
-            if track:
-                return track
-        except Exception as e:
-            print(f"[ERROR] Error checking playlist {pl['id']}: {e}")
-            continue
+    if seed_track_id:
+        print(f"[INFO] Using liked track {seed_track_id[:10]}... as seed for audio feature matching")
+        similar_tracks = get_similar_tracks_by_audio_features(
+            sp, 
+            seed_track_id, 
+            existing_artist_ids, 
+            liked_songs_artist_ids, 
+            max_follower_count,
+            limit=10
+        )
+        
+        if similar_tracks:
+            # Return the first valid track from the batch
+            return similar_tracks[0]
+    else:
+        print(f"[INFO] No liked tracks found for '{artist_name}'")
 
-    # Step 2: User playlists via API
-    print(f"[INFO] No valid tracks found in artist playlists for '{artist_name}'. Trying user playlists...")
-    
-    candidate_playlists = []
-    search_limit = 50
-    max_search_pages = 2  # Reduced for lite version
-    
-    for page in range(max_search_pages):
-        offset = page * search_limit
-        try:
-            search_result = safe_spotify_call(
-                sp.search, 
-                f'"{artist_name}"', 
-                type="playlist", 
-                limit=search_limit, 
-                offset=offset
-            )
-            if not search_result or "playlists" not in search_result:
-                break
-                
-            playlists_data = search_result["playlists"]
-            items = playlists_data.get("items", [])
-            if not items:
-                break
-                
-            for playlist_item in items:
-                pid = playlist_item.get("id")
-                if pid:
-                    candidate_playlists.append(pid)
-                    
-        except Exception as e:
-            print(f"[ERROR] Error searching playlists: {e}")
-            break
-    
-    if candidate_playlists:
-        random.shuffle(candidate_playlists)
-        for pid in candidate_playlists[:10]:  # Limit for lite version
-            try:
-                track = get_random_track_from_playlist(
-                    sp, pid,
-                    excluded_artist=None,
-                    max_followers=None, 
-                    source_desc=f"user playlist {pid[:10]}...",
-                    artists_data=artists_data,
-                    existing_artist_ids=existing_artist_ids,
-                    liked_songs_artist_ids=liked_songs_artist_ids
-                )
-                if track:
-                    return track
-            except Exception as e:
-                continue
-
-    # Step 3: Last.fm similar artists (simplified)
-    print(f"[INFO] Trying Last.fm similar artists for '{artist_name}'...")
+    # Step 2: Last.fm similar artists as fallback (only if no audio feature matches found)
+    print(f"[INFO] No audio feature matches found. Trying Last.fm similar artists for '{artist_name}'...")
     if LASTFM_API_KEY:
         try:
             url = "http://ws.audioscrobbler.com/2.0/"
@@ -330,7 +260,7 @@ def select_track_for_artist_lite(sp, artist_name, artists_data, existing_artist_
                 for sim_artist in similar_artists[:3]:  # Reduced for lite version
                     sim_name = sim_artist.get("name", "").strip()
                     if sim_name:
-                        track = select_track_for_artist_lite(sp, sim_name, artists_data, existing_artist_ids, liked_songs_artist_ids)
+                        track = select_track_for_artist_lite(sp, sim_name, existing_artist_ids, liked_songs_artist_ids, max_follower_count)
                         if track:
                             return track
         except Exception as e:
@@ -376,6 +306,70 @@ def fetch_all_recent_tracks(username=None, api_key=None):
     
     return recent_tracks
 
+def fetch_spotify_listening_data(sp):
+    """
+    Fetch user listening data from Spotify (recently played + top tracks)
+    Combines recency and frequency to build artist play map
+    
+    Returns:
+        dict: {artist_name_lower: play_count} with higher weights for recent + frequent plays
+    """
+    artist_play_map = {}
+    
+    try:
+        # 1. Get recently played tracks (last 50)
+        print("[INFO] Fetching recently played tracks from Spotify...")
+        recently_played = safe_spotify_call(sp.current_user_recently_played, limit=50)
+        
+        if recently_played and "items" in recently_played:
+            for item in recently_played["items"]:
+                track = item.get("track")
+                if not track:
+                    continue
+                
+                for artist in track.get("artists", []):
+                    artist_name = artist.get("name", "").lower()
+                    if artist_name:
+                        # Weight recent plays higher (3x)
+                        artist_play_map[artist_name] = artist_play_map.get(artist_name, 0) + 3
+            
+            print(f"[INFO] Found {len(recently_played['items'])} recently played tracks")
+        
+        # 2. Get top tracks - short term (last 4 weeks)
+        print("[INFO] Fetching top tracks (short term) from Spotify...")
+        top_tracks_short = safe_spotify_call(sp.current_user_top_tracks, limit=50, time_range="short_term")
+        
+        if top_tracks_short and "items" in top_tracks_short:
+            for track in top_tracks_short["items"]:
+                for artist in track.get("artists", []):
+                    artist_name = artist.get("name", "").lower()
+                    if artist_name:
+                        # Weight short-term tops high (2x)
+                        artist_play_map[artist_name] = artist_play_map.get(artist_name, 0) + 2
+            
+            print(f"[INFO] Found {len(top_tracks_short['items'])} short-term top tracks")
+        
+        # 3. Get top tracks - medium term (last 6 months)
+        print("[INFO] Fetching top tracks (medium term) from Spotify...")
+        top_tracks_medium = safe_spotify_call(sp.current_user_top_tracks, limit=50, time_range="medium_term")
+        
+        if top_tracks_medium and "items" in top_tracks_medium:
+            for track in top_tracks_medium["items"]:
+                for artist in track.get("artists", []):
+                    artist_name = artist.get("name", "").lower()
+                    if artist_name:
+                        # Weight medium-term tops moderately (1x)
+                        artist_play_map[artist_name] = artist_play_map.get(artist_name, 0) + 1
+            
+            print(f"[INFO] Found {len(top_tracks_medium['items'])} medium-term top tracks")
+        
+        print(f"[INFO] Built Spotify listening data for {len(artist_play_map)} unique artists")
+        return artist_play_map
+        
+    except Exception as e:
+        print(f"[ERROR] Error fetching Spotify listening data: {e}")
+        return {}
+
 def build_artist_play_map(recent_tracks, days_limit=365):
     """Build simplified play map"""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_limit)
@@ -396,49 +390,75 @@ def build_artist_play_map(recent_tracks, days_limit=365):
     
     return artist_play_map
 
-def calculate_weights_lite(all_artists, artist_play_map):
-    """Simplified weight calculation"""
-    weights = {}
+def build_artist_list_from_liked_songs(sp, artist_play_map=None):
+    """
+    Build fresh artist list from user's current liked songs
+    Returns dict of {artist_id: {name, total_liked, weight}}
+    """
+    print("[INFO] Building artist list from liked songs...")
+    artist_counts = {}
     
-    for aid, info in all_artists.items():
-        artist_name = info.get("name", "").lower()
-        total_liked = int(info.get("total_liked", 0))
-        
-        # Simple scoring - less liked artists get higher weights
-        if total_liked == 0:
-            base_weight = 10
-        elif total_liked == 1:
-            base_weight = 5
-        elif total_liked == 2:
-            base_weight = 2
-        else:
-            base_weight = 1
-        
-        # Boost if in Last.fm history
-        if artist_name in artist_play_map:
-            base_weight *= 1.5
-        
-        weights[aid] = base_weight
-    
-    return weights
-
-def load_artists_lite():
-    """Load artists from local JSON file"""
-    if os.path.exists(ARTISTS_FILE):
-        try:
-            with open(ARTISTS_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_artists_lite(artists_data):
-    """Save artists to local JSON file"""
     try:
-        with open(ARTISTS_FILE, 'w') as f:
-            json.dump(artists_data, f, indent=2)
+        offset = 0
+        limit = 50
+        
+        while True:
+            results = safe_spotify_call(sp.current_user_saved_tracks, limit=limit, offset=offset)
+            if not results or not results.get("items"):
+                break
+            
+            for item in results["items"]:
+                track = item.get("track")
+                if track and "artists" in track:
+                    for artist in track["artists"]:
+                        artist_id = artist.get("id")
+                        artist_name = artist.get("name")
+                        
+                        if artist_id and artist_name:
+                            if artist_id not in artist_counts:
+                                artist_counts[artist_id] = {
+                                    "name": artist_name,
+                                    "total_liked": 0
+                                }
+                            artist_counts[artist_id]["total_liked"] += 1
+            
+            if len(results["items"]) < limit:
+                break
+            
+            offset += limit
+            
+            if offset % 500 == 0:
+                print(f"[INFO] Processed {offset} liked songs...")
+                time.sleep(0.5)
+        
+        print(f"[INFO] Found {len(artist_counts)} unique artists in liked songs")
+        
+        # Calculate weights based on how many songs user has liked
+        for artist_id, info in artist_counts.items():
+            total_liked = info["total_liked"]
+            artist_name_lower = info["name"].lower()
+            
+            # Weight formula: fewer liked songs = higher weight (more likely to discover new tracks)
+            if total_liked == 1:
+                base_weight = 10
+            elif total_liked == 2:
+                base_weight = 5
+            elif total_liked == 3:
+                base_weight = 2
+            else:
+                base_weight = 1
+            
+            # Boost if in Last.fm history
+            if artist_play_map and artist_name_lower in artist_play_map:
+                base_weight *= 1.5
+            
+            info["weight"] = base_weight
+        
+        return artist_counts
+        
     except Exception as e:
-        print(f"[ERROR] Could not save artists file: {e}")
+        print(f"[ERROR] Error building artist list: {e}")
+        return {}
 
 def remove_old_tracks_from_playlist(sp, playlist_id, days_old=7):
     """Remove old tracks from playlist"""
@@ -549,28 +569,52 @@ def fetch_liked_songs_artist_ids(sp):
         print(f"[ERROR] Error fetching liked songs: {e}")
         return set()  # Return empty set on error, don't fail the entire process
 
-def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None):
+def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None):
     """
-    Main lite script function that can be called from the web app
+    Main lite script function - runs fresh each time with no caching
+    Scans liked songs in real-time and generates recommendations
+    
+    Args:
+        max_follower_count: Maximum artist follower count (None = no limit)
+                           Popular: None
+                           Somewhat Popular: 100000
+                           Balanced: 75000  
+                           Niche: 50000
+                           Very Niche: 25000
     """
     try:
-        print(f"[INFO] Starting lite script run for playlist {output_playlist_id}")
+        follower_desc = f"max {max_follower_count:,} followers" if max_follower_count else "no follower limit"
+        print(f"[INFO] Starting fresh recommendation run for playlist {output_playlist_id} ({follower_desc})")
         
-        # Load existing artists data
-        artists_data = load_artists_lite()
-        print(f"[INFO] Loaded {len(artists_data)} artists from cache")
-        
-        # Fetch user's liked songs to build exclusion list
-        liked_songs_artist_ids = fetch_liked_songs_artist_ids(sp)
-        
-        # Get Last.fm data if available
-        recent_tracks = []
+        # Get listening data for lottery weights
         artist_play_map = {}
         if lastfm_username and LASTFM_API_KEY:
+            # Use Last.fm data if username provided
             print("[INFO] Fetching Last.fm recent tracks...")
             recent_tracks = fetch_all_recent_tracks(lastfm_username, LASTFM_API_KEY)
             artist_play_map = build_artist_play_map(recent_tracks)
-            print(f"[INFO] Found {len(recent_tracks)} recent tracks, {len(artist_play_map)} unique artists")
+            print(f"[INFO] Found {len(recent_tracks)} recent tracks, {len(artist_play_map)} unique artists from Last.fm")
+        else:
+            # Otherwise use Spotify listening data
+            print("[INFO] No Last.fm username provided. Using Spotify listening data...")
+            artist_play_map = fetch_spotify_listening_data(sp)
+        
+        # Build fresh artist list from current liked songs
+        print("[INFO] Scanning liked songs to build artist list...")
+        artists_data = build_artist_list_from_liked_songs(sp, artist_play_map)
+        
+        if not artists_data:
+            print("[ERROR] No artists found in liked songs!")
+            return {
+                "success": False,
+                "error": "No artists found in your liked songs. Please add some liked songs first.",
+                "tracks_added": 0,
+                "tracks_removed": 0
+            }
+        
+        # Fetch liked songs artist IDs for exclusion (same data, different format for efficient lookup)
+        liked_songs_artist_ids = set(artists_data.keys())
+        print(f"[INFO] Will exclude {len(liked_songs_artist_ids)} artists from liked songs")
         
         # Remove old tracks from playlist
         removed_count = remove_old_tracks_from_playlist(sp, output_playlist_id, days_old=7)
@@ -588,67 +632,61 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None):
             offset += 100
         
         existing_artist_ids = build_existing_artist_ids(playlist_items)
-        print(f"[INFO] Found {len(existing_artist_ids)} existing artists in playlist")
+        print(f"[INFO] Found {len(existing_artist_ids)} existing artists in target playlist")
         
-        # Calculate weights for artist selection
-        if artists_data:
-            weights = calculate_weights_lite(artists_data, artist_play_map)
+        # Select artists and find tracks using weighted lottery
+        selected_tracks = []
+        attempts = 0
+        max_attempts = max_songs * 5  # Allow more attempts than target
+        
+        # Build weight lists for weighted selection
+        artist_ids = list(artists_data.keys())
+        artist_weights = [artists_data[aid]["weight"] for aid in artist_ids]
+        
+        while len(selected_tracks) < max_songs and attempts < max_attempts:
+            attempts += 1
             
-            # Select artists and find tracks
-            selected_tracks = []
-            attempts = 0
-            max_attempts = max_songs * 5  # Allow more attempts than target
-            
-            while len(selected_tracks) < max_songs and attempts < max_attempts:
-                attempts += 1
+            try:
+                # Weighted random selection from liked songs artists
+                selected_aid = random.choices(artist_ids, weights=artist_weights, k=1)[0]
+                artist_info = artists_data[selected_aid]
+                artist_name = artist_info.get("name", "")
                 
-                # Weighted random selection
-                if weights:
-                    artist_ids = list(weights.keys())
-                    weight_values = list(weights.values())
-                    
-                    try:
-                        selected_aid = random.choices(artist_ids, weights=weight_values, k=1)[0]
-                        artist_info = artists_data[selected_aid]
-                        artist_name = artist_info.get("name", "")
-                        
-                        print(f"[INFO] Attempt {attempts}: Searching for tracks by '{artist_name}'")
-                        
-                        track = select_track_for_artist_lite(sp, artist_name, artists_data, existing_artist_ids, liked_songs_artist_ids)
-                        if track:
-                            selected_tracks.append(track)
-                            # Add artist to existing set to avoid duplicates
-                            for artist in track["artists"]:
-                                if artist.get("id"):
-                                    existing_artist_ids.add(artist["id"])
-                            print(f"[SUCCESS] Added track {len(selected_tracks)}/{max_songs}: {track['name']} by {artist_name}")
-                        else:
-                            # Reduce weight for this artist if no track found
-                            weights[selected_aid] *= 0.5
-                            
-                    except Exception as e:
-                        print(f"[ERROR] Error selecting track: {e}")
-                        continue
+                print(f"[INFO] Attempt {attempts}: Searching for similar tracks to '{artist_name}' (liked {artist_info['total_liked']} songs)")
+                
+                # Find tracks by similar artists (NOT by the selected artist themselves)
+                track = select_track_for_artist_lite(sp, artist_name, existing_artist_ids, liked_songs_artist_ids, max_follower_count)
+                
+                if track:
+                    selected_tracks.append(track)
+                    # Add artist to existing set to avoid duplicates
+                    for artist in track["artists"]:
+                        if artist.get("id"):
+                            existing_artist_ids.add(artist["id"])
+                    print(f"[SUCCESS] Found track {len(selected_tracks)}/{max_songs}: {track['name']} by {track['artists'][0]['name']}")
                 else:
-                    print("[WARNING] No artists available for selection")
-                    break
-            
-            # Add selected tracks to playlist
-            if selected_tracks:
-                track_uris = [track["uri"] for track in selected_tracks]
-                try:
-                    result = safe_spotify_call(sp.playlist_add_items, output_playlist_id, track_uris)
-                    if result:
-                        print(f"[SUCCESS] Added {len(selected_tracks)} new tracks to playlist")
-                    else:
-                        print("[ERROR] Failed to add tracks to playlist")
-                except Exception as e:
-                    print(f"[ERROR] Error adding tracks to playlist: {e}")
-            else:
-                print("[WARNING] No tracks were selected")
+                    # Reduce weight for this artist if no track found
+                    idx = artist_ids.index(selected_aid)
+                    artist_weights[idx] *= 0.5
+                    
+            except Exception as e:
+                print(f"[ERROR] Error selecting track: {e}")
+                continue
         
-        # Close selenium driver
-        close_global_driver()
+        # Add all selected tracks to playlist in one batch after discovery is complete
+        if selected_tracks:
+            print(f"[INFO] Discovery complete! Adding {len(selected_tracks)} tracks to playlist...")
+            track_uris = [track["uri"] for track in selected_tracks]
+            try:
+                result = safe_spotify_call(sp.playlist_add_items, output_playlist_id, track_uris)
+                if result:
+                    print(f"[SUCCESS] Added {len(selected_tracks)} new tracks to playlist")
+                else:
+                    print("[ERROR] Failed to add tracks to playlist")
+            except Exception as e:
+                print(f"[ERROR] Error adding tracks to playlist: {e}")
+        else:
+            print("[WARNING] No tracks were selected")
         
         result = {
             "success": True,
@@ -662,7 +700,6 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None):
         
     except Exception as e:
         print(f"[FATAL ERROR] Lite script failed: {e}")
-        close_global_driver()
         return {
             "success": False,
             "error": str(e),
