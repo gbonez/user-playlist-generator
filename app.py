@@ -124,9 +124,16 @@ def auth_status():
     
     return jsonify({'authenticated': False}), 401
 
-@app.route('/api/login')
+@app.route('/login')
 def login():
-    """Generate Spotify OAuth URL for frontend to use"""
+    """Redirect directly to Spotify authorization"""
+    sp_oauth = create_spotify_oauth()
+    auth_url = sp_oauth.get_authorize_url()
+    return redirect(auth_url)
+
+@app.route('/api/login')
+def api_login():
+    """Generate Spotify OAuth URL for frontend to use (API version)"""
     sp_oauth = create_spotify_oauth()
     auth_url = sp_oauth.get_authorize_url()
     return jsonify({'auth_url': auth_url})
