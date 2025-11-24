@@ -406,89 +406,135 @@ def get_similar_tracks_by_audio_features_db(sp, seed_track_id, existing_artist_i
             if already_exists:
                 print(f"[INFO] ✓ Seed track already in database, skipping YouTube analysis")
             else:
-                # Search YouTube for the track
-                print(f"[INFO] Searching YouTube for: {artist_name} - {track_name}")
-                video_id, youtube_title = search_youtube(track_name, artist_name, max_results=5)
-                
-                if not video_id:
-                    print(f"[SKIP] Could not find track on YouTube - track cannot be used as seed")
-                    return None  # Signal to caller to try another seed track
-                
-                print(f"[INFO] Found on YouTube: {youtube_title}")
-                
-                # Download and analyze with librosa
-                print(f"[INFO] Downloading and analyzing audio features...")
-                features = download_and_analyze_audio(video_id, track_name, artist_name)
-                
-                if not features:
-                    print(f"[SKIP] Could not extract audio features - track cannot be used as seed")
-                    return None  # Signal to caller to try another seed track
-                
-                print(f"[INFO] Extracted features: tempo={features['tempo']:.1f}bpm, energy={features['energy']:.3f}, dance={features['danceability']:.3f}")
-                
-                # Add to database
-                print(f"[INFO] Adding seed track to database...")
-                add_track_to_audio_features_db(
-                    conn,
-                    seed_track_id,
-                    artist_name,
-                    track_name,
-                    seed_track['uri'],
-                    seed_track.get('popularity', 0),
-                    features,
-                    youtube_title
-                )
-                
-                time.sleep(2)  # Brief delay after YouTube download
-            
-            # Now query database for most similar track
-            print(f"[INFO] Searching database for most similar track...")
-            
-            # Re-fetch features from database to ensure we have the exact same values
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT tempo_bpm, beat_regularity, brightness_hz, treble_hz, fullness_hz, 
-                           dynamic_range, percussiveness, loudness, warmth, punch, texture,
-                           energy, danceability, mood_positive, acousticness, instrumental
-                    FROM audio_features
-                    WHERE spotify_track_id = %s
-                """, (seed_track_id,))
-                row = cursor.fetchone()
-                
-                if not row:
-                    print("[ERROR] Seed track not found in database after insertion")
+                try:
+                    print(f"[INFO] [DB-SIMILARITY] Analyzing seed track {seed_track_id[:10]}... with YouTube + librosa")
+                    # Get seed track info from Spotify
+                    seed_track = safe_spotify_call(sp.track, seed_track_id)
+                    if not seed_track:
+                        print("[SKIP] Could not get seed track info")
+                        return None
+                    track_name = seed_track['name']
+                    artist_name = ', '.join([a['name'] for a in seed_track['artists']])
+                    print(f"[INFO] Seed track: '{track_name}' by {artist_name}")
+                    # Connect to database
+                    conn = get_db_connection()
+                    if not conn:
+                        print("[SKIP] Database connection failed")
+                        return None
+                    try:
+                        # Check if seed track already in database (REQUIREMENT 2: skip YouTube if exists)
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                "SELECT spotify_track_id FROM audio_features WHERE spotify_track_id = %s",
+                                (seed_track_id,)
+                            )
+                            already_exists = cursor.fetchone() is not None
+                        if already_exists:
+                            print(f"[INFO] ✓ Seed track already in database, skipping YouTube analysis")
+                        else:
+                            # Search YouTube for the track
+                            print(f"[INFO] Searching YouTube for: {artist_name} - {track_name}")
+                            try:
+                                video_id, youtube_title = search_youtube(track_name, artist_name, max_results=5)
+                                if not video_id:
+                                    print(f"[ERROR] No YouTube match found for '{track_name}' by '{artist_name}'. Skipping seed.")
+                                    return None
+                                print(f"[INFO] Downloading and analyzing YouTube audio for video: {youtube_title} ({video_id})")
+                                features = download_and_analyze_audio(video_id, track_name, artist_name)
+                                if not features:
+                                    print(f"[ERROR] Audio analysis failed for YouTube video '{youtube_title}'. Skipping seed.")
+                                    return None
+                                print(f"[INFO] Audio features extracted: {features}")
+                                # Add to database
+                                add_track_to_audio_features_db(conn, seed_track_id, artist_name, track_name, seed_track['uri'], seed_track.get('popularity', 0), features, youtube_title)
+                            except Exception as e:
+                                print(f"[ERROR] Exception during YouTube download/analyze: {e}. Skipping seed.")
+                                return None
+                        # Now query database for most similar track
+                        print(f"[INFO] Searching database for most similar track...")
+                        # Re-fetch features from database to ensure we have the exact same values
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                "SELECT tempo_bpm, key_musical, beat_regularity, brightness_hz, treble_hz, fullness_hz, dynamic_range, percussiveness, loudness, warmth, punch, texture, energy, danceability, mood_positive, acousticness, instrumental FROM audio_features WHERE spotify_track_id = %s",
+                                (seed_track_id,)
+                            )
+                            row = cursor.fetchone()
+                            if not row:
+                                print(f"[ERROR] Could not fetch features for seed track from DB. Skipping seed.")
+                                return None
+                            features_from_db = {
+                                'tempo': row[0],
+                                'key_estimate': row[1],
+                                'beat_strength': row[2],
+                                'spectral_centroid': row[3],
+                                'spectral_rolloff': row[4],
+                                'spectral_bandwidth': row[5],
+                                'spectral_contrast': row[6],
+                                'zero_crossing_rate': row[7],
+                                'rms_energy': row[8],
+                                'harmonic_mean': row[9],
+                                'percussive_mean': row[10],
+                                'mfcc_mean': row[11],
+                                'energy': row[12],
+                                'danceability': row[13],
+                                'valence': row[14],
+                                'acousticness': row[15],
+                                'instrumentalness': row[16]
+                            }
+                        print(f"[DEBUG] Seed track features for comparison: {features_from_db}")
+                        # Find most similar tracks (get top 10 to validate)
+                        similar_tracks_list = find_most_similar_track_in_db(conn, features_from_db, liked_track_ids or [], max_results=10)
+                        if not similar_tracks_list:
+                            print(f"[WARN] No similar tracks found in database for seed track {seed_track_id}")
+                            return None
+                        print(f"[INFO] Found {len(similar_tracks_list)} similar tracks in database, validating...")
+                        # Fetch seed track genres from Last.fm (once, outside the loop)
+                        print(f"[INFO] Fetching genres for seed track from Last.fm...")
+                        seed_genres = get_lastfm_track_genres(artist_name, track_name)
+                        if seed_genres:
+                            print(f"[DEBUG] Seed track genres: {seed_genres}")
+                        else:
+                            print(f"[DEBUG] No genres found for seed track.")
+                        # Try each similar track until we find one that passes validation
+                        for idx, similar_track_info in enumerate(similar_tracks_list, 1):
+                            print(f"[DEBUG] Comparing candidate #{idx}: {similar_track_info['track_name']} by {similar_track_info['artist_name']} (ID: {similar_track_info['id']})")
+                            print(f"[DEBUG] Candidate features: {similar_track_info}")
+                            print(f"[DEBUG] Similarity distance: {similar_track_info['similarity_distance']}")
+                            # Fetch full track info from Spotify
+                            candidate_track = safe_spotify_call(sp.track, similar_track_info['id'])
+                            if not candidate_track:
+                                print(f"[WARN] Could not fetch candidate track info from Spotify. Skipping.")
+                                continue
+                            # Validate track
+                            valid = validate_track_lite(candidate_track, existing_artist_ids, liked_songs_artist_ids, max_follower_count)
+                            print(f"[DEBUG] Validation result: {valid}")
+                            if not valid:
+                                print(f"[INFO] Candidate track failed validation. Trying next.")
+                                continue
+                            # Compare genres if available
+                            candidate_genres = get_lastfm_track_genres(similar_track_info['artist_name'], similar_track_info['track_name'])
+                            has_genre_match, shared_genres = compare_genres(seed_genres, candidate_genres)
+                            print(f"[DEBUG] Genre comparison: match={has_genre_match}, shared={shared_genres}")
+                            if has_genre_match is False:
+                                print(f"[INFO] Candidate track does not share genres with seed. Trying next.")
+                                continue
+                            print(f"[SUCCESS] Found valid similar track: {candidate_track['name']} by {candidate_track['artists'][0]['name']}")
+                            return candidate_track
+                        print("[INFO] No similar tracks passed validation requirements")
+                        return None
+                    finally:
+                        conn.close()
+                except YouTubeRateLimitError as e:
+                    print(f"[ERROR] YouTube rate limit hit: {e}")
+                    print("[INFO] Falling back to Spotify API recommendations")
+                    return get_similar_tracks_by_audio_features_spotify_fallback(
+                        sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids, max_follower_count
+                    )
+                except Exception as e:
+                    print(f"[ERROR] Error finding similar tracks by audio features (DB): {e}")
+                    import traceback
+                    traceback.print_exc()
                     return None
-                
-                # Build features dict for similarity search
-                features_from_db = {
-                    'tempo': row[0],
-                    'beat_strength': row[1],
-                    'spectral_centroid': row[2],
-                    'spectral_rolloff': row[3],
-                    'spectral_bandwidth': row[4],
-                    'spectral_contrast': row[5],
-                    'zero_crossing_rate': row[6],
-                    'rms_energy': row[7],
-                    'harmonic_mean': row[8],
-                    'percussive_mean': row[9],
-                    'mfcc_mean': row[10],
-                    'energy': row[11],
-                    'danceability': row[12],
-                    'valence': row[13],
-                    'acousticness': row[14],
-                    'instrumentalness': row[15]
-                }
-            
-            # Find most similar tracks (get top 10 to validate)
-            # REQUIREMENT 1: We'll validate each until we find one that passes all requirements
-            similar_tracks_list = find_most_similar_track_in_db(conn, features_from_db, liked_track_ids or [], max_results=10)
-            
-            if not similar_tracks_list:
-                print("[INFO] No similar tracks found in database")
-                return None
-            
-            print(f"[INFO] Found {len(similar_tracks_list)} similar tracks in database, validating...")
-            
             # Fetch seed track genres from Last.fm (once, outside the loop)
             print(f"[INFO] Fetching genres for seed track from Last.fm...")
             seed_genres = get_lastfm_track_genres(artist_name, track_name)
