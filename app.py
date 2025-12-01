@@ -62,7 +62,7 @@ CORS(app,
      supports_credentials=True, 
      origins=[FRONTEND_URL, "http://localhost:*", "https://gbonez.github.io"],
      allow_headers=["Content-Type", "Authorization"],
-     methods=["GET", "POST", "OPTIONS"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
      expose_headers=["Set-Cookie"])
 
 # Spotify OAuth configuration
