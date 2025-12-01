@@ -95,14 +95,26 @@
                             style="width: 100%; height: 8px; border-radius: 4px; background: linear-gradient(to right, #1db954, #9333ea); cursor: pointer; -webkit-appearance: none; appearance: none;">
                         <div
                             style="display: flex; justify-content: space-between; font-size: 0.75rem; color: rgba(255, 255, 255, 0.6); margin-top: 4px;">
-                            <span>Popular</span>
-                            <span>Very Niche</span>
+                            <span>Popular (No limit)</span>
+                            <span>Niche (25K max)</span>
                         </div>
                     </div>
 
                     <div class="form-group">
                         <label for="lastfmUsername">Last.fm Username (Optional)</label>
                         <input type="text" id="lastfmUsername" class="input" placeholder="Your Last.fm username">
+                    </div>
+
+                    <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" id="enableGenreMatching"
+                            style="width: auto; height: 20px; cursor: pointer;">
+                        <label for="enableGenreMatching" style="margin: 0; cursor: pointer;">
+                            Enable Genre Matching
+                            <span
+                                style="font-size: 0.85rem; color: rgba(255, 255, 255, 0.6); display: block; margin-top: 4px;">
+                                Recommendations must share at least 1 genre with seed artist
+                            </span>
+                        </label>
                     </div>
 
                     <button onclick="startDiscovery()" id="startBtn" class="btn-primary">
@@ -268,26 +280,26 @@
 
         function updateNicheLevelText(value) {
             const labels = {
-                '1': 'Popular',
-                '2': 'Somewhat Popular',
-                '3': 'Balanced',
-                '4': 'Niche',
-                '5': 'Very Niche'
+                '1': 'Popular (No limit)',
+                '2': 'Very Popular (3M max)',
+                '3': 'Balanced (1M max)',
+                '4': 'Somewhat Niche (100K max)',
+                '5': 'Niche (25K max)'
             };
             document.getElementById('nicheLevelText').textContent = labels[value];
         }
 
         function getNicheFollowerCount(level) {
-            // Level 1 (Popular): No limit (return None/null)
-            // Level 2: 100,000 followers
-            // Level 3: 75,000 followers (balanced)
-            // Level 4: 50,000 followers (niche)
-            // Level 5: 25,000 followers (very niche - half of original)
+            // Level 1 (Popular): No limit
+            // Level 2 (Very Popular): 3,000,000 followers
+            // Level 3 (Balanced): 1,000,000 followers
+            // Level 4 (Somewhat Niche): 100,000 followers
+            // Level 5 (Niche): 25,000 followers
             const followerLimits = {
                 '1': null,
-                '2': 100000,
-                '3': 75000,
-                '4': 50000,
+                '2': 3000000,
+                '3': 1000000,
+                '4': 100000,
                 '5': 25000
             };
             return followerLimits[level];
@@ -351,6 +363,7 @@
             const minLikedSongs = parseInt(document.getElementById('minLikedSongs').value);
             const generationMode = document.getElementById('generationMode').value;
             const sourceUrl = document.getElementById('sourceUrl').value.trim();
+            const enableGenreMatching = document.getElementById('enableGenreMatching').checked;
 
             // Hide previous results
             document.getElementById('addedSongsSection').classList.add('hidden');
@@ -399,7 +412,8 @@
                         create_new: createNew,
                         min_liked_songs: minLikedSongs,
                         generation_mode: generationMode,
-                        source_url: sourceUrl || null
+                        source_url: sourceUrl || null,
+                        enable_genre_matching: enableGenreMatching
                     })
                 });
 

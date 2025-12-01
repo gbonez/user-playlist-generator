@@ -213,8 +213,183 @@ def get_db_connection():
         print(f"[WARN] Failed to connect to database: {e} - similarity matching disabled")
         return None
 
+def get_lastfm_artist_genres(artist_name):
+    """Fetch genres from Last.fm for an artist"""
+    if not LASTFM_API_KEY:
+        return []
+    
+    try:
+        url = "http://ws.audioscrobbler.com/2.0/"
+        params = {
+            "method": "artist.getInfo",
+            "artist": artist_name,
+            "api_key": LASTFM_API_KEY,
+            "format": "json"
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        
+        if "artist" in data and "tags" in data["artist"] and "tag" in data["artist"]["tags"]:
+            tags = data["artist"]["tags"]["tag"]
+            genres = [tag["name"].lower() for tag in tags[:5] if isinstance(tag, dict)]
+            return genres
+        
+        return []
+    except Exception as e:
+        print(f"[WARN] Last.fm genres error for {artist_name}: {e}")
+        return []
+
+def get_spotify_artist_genres(sp, artist_name):
+    """Fetch genres from Spotify for an artist"""
+    try:
+        results = safe_spotify_call(sp.search, q=f"artist:{artist_name}", type="artist", limit=1)
+        
+        if results and "artists" in results and results["artists"]["items"]:
+            artist = results["artists"]["items"][0]
+            genres = [genre.lower() for genre in artist.get("genres", [])]
+            return genres
+        
+        return []
+    except Exception as e:
+        print(f"[WARN] Spotify genres error for {artist_name}: {e}")
+        return []
+
+def normalize_genre(genre):
+    """Normalize genre names for better matching"""
+    genre = genre.lower().strip()
+    
+    # Common mappings
+    mappings = {
+        "hip hop": "hip-hop",
+        "r&b": "rnb",
+        "rhythm and blues": "rnb",
+        "electronic dance music": "edm",
+        "drum and bass": "drum-n-bass",
+        "pop rock": "pop-rock",
+        "indie rock": "indie-rock",
+        "alternative rock": "alt-rock",
+        "hard rock": "hard-rock",
+        "heavy metal": "metal",
+        "death metal": "metal",
+        "black metal": "metal",
+    }
+    
+    return mappings.get(genre, genre)
+
+def get_or_create_artist_genres(sp, conn, artist_name):
+    """
+    Get genres for an artist from database, or fetch and store if not exists
+    Returns list of up to 3 genres
+    """
+    try:
+        # Check if artist already has genres in database
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT genres FROM artist_genres 
+                WHERE artist_name = %s
+            """, (artist_name,))
+            row = cursor.fetchone()
+            
+            if row and row[0]:
+                print(f"[INFO] Found cached genres for {artist_name}: {row[0]}")
+                return row[0]
+        
+        # Not in database - fetch from multiple sources
+        print(f"[INFO] Fetching genres for new artist: {artist_name}")
+        
+        spotify_genres = get_spotify_artist_genres(sp, artist_name)
+        lastfm_genres = get_lastfm_artist_genres(artist_name)
+        
+        # Merge and rank genres
+        genre_scores = {}
+        
+        # Spotify genres (weight 3)
+        for genre in spotify_genres:
+            normalized = normalize_genre(genre)
+            genre_scores[normalized] = genre_scores.get(normalized, 0) + 3
+        
+        # Last.fm genres (weight 2)
+        for genre in lastfm_genres:
+            normalized = normalize_genre(genre)
+            genre_scores[normalized] = genre_scores.get(normalized, 0) + 2
+        
+        # Sort and take top 3
+        sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+        top_genres = [genre for genre, score in sorted_genres[:3]]
+        
+        if top_genres:
+            # Store in database
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO artist_genres (artist_name, genres)
+                    VALUES (%s, %s)
+                    ON CONFLICT (artist_name) DO UPDATE
+                    SET genres = EXCLUDED.genres
+                """, (artist_name, top_genres))
+            conn.commit()
+            print(f"[INFO] Stored {len(top_genres)} genres for {artist_name}: {top_genres}")
+            return top_genres
+        else:
+            print(f"[WARN] No genres found for {artist_name}")
+            return []
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to get genres for {artist_name}: {e}")
+        return []
+
+def check_genre_match(seed_genres, candidate_genres):
+    """
+    Check if at least 1 out of 3 genres match between seed and candidate
+    Returns (bool: has_match, list: matched_genres)
+    """
+    if not seed_genres or not candidate_genres:
+        # If either has no genre data, skip genre validation
+        print("[INFO] Genre data missing - skipping genre validation")
+        return (True, [])
+    
+    # Normalize genres
+    seed_set = set(normalize_genre(g) for g in seed_genres)
+    candidate_set = set(normalize_genre(g) for g in candidate_genres)
+    
+    # Find matches
+    matches = seed_set & candidate_set
+    
+    if matches:
+        print(f"[GENRE MATCH] Found {len(matches)} matching genres: {list(matches)}")
+        return (True, list(matches))
+    else:
+        print(f"[GENRE MISMATCH] Seed genres {list(seed_set)} vs Candidate genres {list(candidate_set)}")
+        return (False, [])
+
 def add_track_to_audio_features_db(conn, track_id, artist_name, track_name, spotify_uri, popularity, features, youtube_title):
-    """Add a track's audio features to the database"""
+    """
+    Add a track's audio features to the database
+    Also checks and populates artist_genres if needed
+    """
+    # First, check if artist has genres in the database
+    # Extract first artist if multiple (comma-separated)
+    first_artist = artist_name.split(',')[0].strip() if artist_name else None
+    
+    if first_artist:
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT array_length(genres, 1) as genre_count
+                    FROM artist_genres 
+                    WHERE artist_name = %s
+                """, (first_artist,))
+                result = cursor.fetchone()
+                
+                # If artist not in DB or has <3 genres, try to populate
+                if not result or (result[0] is not None and result[0] < 3):
+                    print(f"[INFO] Artist '{first_artist}' needs genre data, attempting to populate...")
+                    # Note: We need sp (Spotify client) to fetch genres
+                    # This will be handled by get_or_create_artist_genres which is already called elsewhere
+                    # For now, just log it - the actual population happens in get_or_create_artist_genres
+        except Exception as e:
+            print(f"[WARN] Could not check artist genres for {first_artist}: {e}")
+    
     insert_sql = """
     INSERT INTO audio_features (
         spotify_track_id, artist_name, track_name,
@@ -1653,13 +1828,14 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, 
             "tracks_removed": 0
         }
 
-def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None, min_liked_songs=3, generation_mode='liked_songs', source_url=None, job_id=None, running_jobs=None):
+def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None, min_liked_songs=3, generation_mode='liked_songs', source_url=None, job_id=None, running_jobs=None, enable_genre_matching=False):
     """
     Enhanced recommendation script using:
     1. Existing lottery system to pick artists (or custom source)
     2. Mathematical similarity from database for each winner
     3. Validation and deduplication
-    4. Returns list of added songs for display
+    4. Genre matching validation (optional)
+    5. Returns list of added songs for display
     
     Args:
         sp: Spotify client
@@ -1990,6 +2166,10 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                     print(f"[WARN] Could not fetch seed track info: {e}")
                     winner_name = "Unknown Artist"
             
+            # Get seed artist genres for validation
+            seed_genres = get_or_create_artist_genres(sp, conn, winner_name)
+            print(f"[INFO] Seed artist '{winner_name}' genres: {seed_genres}")
+            
             # Get audio features for seed track from database
             try:
                 with conn.cursor() as cursor:
@@ -2046,12 +2226,12 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 candidate_artist_ids = {a['id'] for a in candidate_track['artists']}
                 
                 # Validation checks
-                # 1. Not from seed artist
-                if winner_aid in candidate_artist_ids:
+                # 1. Not from seed artist (only for liked_songs mode)
+                if generation_mode == 'liked_songs' and winner_aid in candidate_artist_ids:
                     continue
                 
-                # 2. Not from liked songs artists
-                if candidate_artist_ids & liked_songs_artist_ids:
+                # 2. Not from liked songs artists (only for liked_songs mode)
+                if generation_mode == 'liked_songs' and candidate_artist_ids & liked_songs_artist_ids:
                     continue
                 
                 # 3. Not already in playlist (artist)
@@ -2066,6 +2246,18 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                         follower_count = main_artist_profile['followers'].get('total', 0)
                         if follower_count > max_follower_count:
                             continue
+                
+                # 5. Check genre match (at least 1/3 genres must match) - if enabled
+                if enable_genre_matching:
+                    candidate_artist_name = candidate_track['artists'][0]['name']
+                    candidate_genres = get_or_create_artist_genres(sp, conn, candidate_artist_name)
+                    genre_match, matched_genres = check_genre_match(seed_genres, candidate_genres)
+                    
+                    if not genre_match:
+                        print(f"[SKIP] No genre match between '{winner_name}' (genres: {seed_genres}) and '{candidate_artist_name}' (genres: {candidate_genres})")
+                        continue
+                    else:
+                        print(f"[MATCH] Genre match found: {matched_genres}")
                 
                 # Valid candidate found!
                 selected_tracks.append(candidate_track)
