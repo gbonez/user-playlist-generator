@@ -556,9 +556,18 @@
 
                 let songsHtml = '';
                 result.added_songs.forEach((song, index) => {
+                    // Format genres if they exist
+                    let genresHtml = '';
+                    if (song.genres && song.genres.length > 0) {
+                        const genreTags = song.genres.map(genre =>
+                            `<span style="display: inline-block; padding: 2px 8px; background: rgba(29, 185, 84, 0.2); color: #1db954; border-radius: 12px; font-size: 0.75rem; margin-right: 4px; margin-top: 4px;">${genre}</span>`
+                        ).join('');
+                        genresHtml = `<div style="margin-top: 6px;">${genreTags}</div>`;
+                    }
+
                     songsHtml += `
                         <div class="song-item" style="padding: 12px; margin: 8px 0; background: rgba(255, 255, 255, 0.05); border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
-                            <div>
+                            <div style="flex: 1;">
                                 <div style="font-weight: 600; font-size: 1rem; margin-bottom: 4px;">
                                     ${index + 1}. ${song.title}
                                 </div>
@@ -566,8 +575,9 @@
                                     ${song.artist}
                                 </div>
                                 ${song.based_on_artist ? `<div style="color: rgba(255, 255, 255, 0.5); font-size: 0.8rem; margin-top: 4px;">Based on: ${song.based_on_artist}</div>` : ''}
+                                ${genresHtml}
                             </div>
-                            <a href="${song.spotify_url}" target="_blank" style="padding: 8px 16px; background: #1db954; color: white; text-decoration: none; border-radius: 20px; font-size: 0.85rem; font-weight: 600; transition: background 0.2s;" onmouseover="this.style.background='#1ed760'" onmouseout="this.style.background='#1db954'">
+                            <a href="${song.spotify_url}" target="_blank" style="padding: 8px 16px; background: #1db954; color: white; text-decoration: none; border-radius: 20px; font-size: 0.85rem; font-weight: 600; transition: background 0.2s; white-space: nowrap;" onmouseover="this.style.background='#1ed760'" onmouseout="this.style.background='#1db954'">
                                 Open in Spotify
                             </a>
                         </div>

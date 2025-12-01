@@ -442,12 +442,37 @@ def merge_and_rank_genres(spotify_genres, lastfm_genres, musicbrainz_genres, dis
 
 def get_artist_genres_live(sp, artist_name):
     """
-    Fetch genres for an artist from all 4 sources in real-time (NO DATABASE)
-    Returns list of 3-5 most relevant genres with cross-source prioritization
+    Fetch genres for an artist - checks database first, then fetches from APIs if needed
+    Returns list of genres (saves to database after fetching from APIs)
     """
-    print(f"[GENRE] Live fetching genres for: {artist_name}")
+    print(f"[GENRE] Fetching genres for: {artist_name}")
     
-    # Fetch from all sources
+    # Step 1: Check database first
+    conn = None
+    try:
+        conn = get_db_connection()
+        if conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT genres FROM artist_genres WHERE artist_name = %s",
+                    (artist_name,)
+                )
+                result = cursor.fetchone()
+                
+                if result and result[0]:
+                    genres = result[0]  # PostgreSQL returns array as list
+                    print(f"  Database: {genres} ({len(genres)} genres)")
+                    return genres
+                else:
+                    print(f"  Database: No genres found")
+    except Exception as e:
+        print(f"[WARN] Database check failed: {e}")
+    finally:
+        if conn:
+            conn.close()
+    
+    # Step 2: Fetch from all API sources
+    print(f"[GENRE] Fetching from APIs...")
     spotify_genres = get_spotify_artist_genres(sp, artist_name)
     print(f"  Spotify: {spotify_genres}")
     
@@ -464,6 +489,28 @@ def get_artist_genres_live(sp, artist_name):
     top_genres = merge_and_rank_genres(spotify_genres, lastfm_genres, musicbrainz_genres, discogs_genres)
     
     print(f"  Final: {top_genres} ({len(top_genres)} total)")
+    
+    # Step 3: Save to database
+    if top_genres:
+        try:
+            conn = get_db_connection()
+            if conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO artist_genres (artist_name, genres)
+                        VALUES (%s, %s)
+                        ON CONFLICT (artist_name) 
+                        DO UPDATE SET genres = EXCLUDED.genres
+                    """, (artist_name, top_genres))
+                    conn.commit()
+                    print(f"  Saved {len(top_genres)} genres to database")
+        except Exception as e:
+            print(f"[WARN] Failed to save genres to database: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
     
     return top_genres
 
@@ -2356,28 +2403,92 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 conn, 
                 features, 
                 liked_track_ids=list(all_excluded_track_ids), 
-                max_results=20  # Get multiple candidates
+                max_results=200  # Get many candidates for genre matching
             )
             
             if not similar_tracks:
                 print(f"[WARN] No similar tracks found in database for {winner_name}")
                 continue
             
-            # Progressive genre matching: Cycle through all candidates with 3 matches, then 2, then 1
-            # This ensures every candidate gets checked at each requirement level
+            # New genre matching logic:
+            # 1. Check up to 100 songs for 3 matching genres
+            # 2. If none found, restart search with 1 genre requirement indefinitely
+            # 3. If seed artist has no genres, use closest distance match regardless of genre
             track_found = False
             
             if enable_genre_matching:
-                # Try with 3 genre matches (5 attempts)
-                print(f"[GENRE PASS 1/3] Trying candidates with 3+ matching genres (max 5 attempts)...")
-                for attempt in range(5):
+                # Check if seed artist has genres
+                if not seed_genres:
+                    print(f"[WARN] Seed artist '{winner_name}' has no genres, using closest distance match")
+                    # No genres for seed - just use closest distance match
                     for candidate in similar_tracks:
-                        if track_found:
+                        candidate_id = candidate['id']
+                        if candidate_id in all_excluded_track_ids:
+                            continue
+                        
+                        candidate_track = safe_spotify_call(sp.track, candidate_id)
+                        if not candidate_track:
+                            continue
+                        
+                        candidate_artist_ids = {a['id'] for a in candidate_track['artists']}
+                        
+                        # Basic validation
+                        if generation_mode == 'liked_songs':
+                            if winner_aid in candidate_artist_ids:
+                                continue
+                        else:
+                            if candidate_artist_ids & seed_artist_ids:
+                                continue
+                        
+                        if generation_mode == 'liked_songs' and candidate_artist_ids & liked_songs_artist_ids:
+                            continue
+                        
+                        if candidate_artist_ids & seen_artist_ids:
+                            continue
+                        
+                        if max_follower_count is not None:
+                            main_artist_id = candidate_track['artists'][0]['id']
+                            main_artist_profile = safe_spotify_call(sp.artist, main_artist_id)
+                            if main_artist_profile and 'followers' in main_artist_profile:
+                                follower_count = main_artist_profile['followers'].get('total', 0)
+                                if follower_count > max_follower_count:
+                                    continue
+                        
+                        # Valid candidate found - add it with genre info
+                        candidate_artist_name = candidate_track['artists'][0]['name']
+                        candidate_genres = get_artist_genres_live(sp, candidate_artist_name)
+                        
+                        selected_tracks.append(candidate_track)
+                        all_excluded_track_ids.add(candidate_id)
+                        seen_artist_ids.update(candidate_artist_ids)
+                        added_songs.append({
+                            'title': candidate_track['name'],
+                            'artist': ', '.join([a['name'] for a in candidate_track['artists']]),
+                            'spotify_url': candidate_track['external_urls']['spotify'],
+                            'based_on_artist': winner_name,
+                            'genres': candidate_genres[:3] if candidate_genres else []
+                        })
+                        print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (based on {winner_name}, distance: {candidate['similarity_distance']:.4f})")
+                        print(f"[INFO] Genres: {candidate_genres[:3] if candidate_genres else 'None'}")
+                        print(f"[PROGRESS] {len(selected_tracks)}/{max_songs} tracks selected")
+                        track_found = True
+                        break
+                else:
+                    # Seed has genres - do genre matching
+                    # Phase 1: Check up to 100 songs for 3 matching genres
+                    print(f"[GENRE PHASE 1] Checking up to 100 songs for 3+ matching genres...")
+                    songs_checked = 0
+                    max_checks_phase1 = 100
+                    
+                    for candidate in similar_tracks:
+                        if track_found or songs_checked >= max_checks_phase1:
                             break
                         
                         candidate_id = candidate['id']
                         if candidate_id in all_excluded_track_ids:
                             continue
+                        
+                        songs_checked += 1
                         
                         candidate_track = safe_spotify_call(sp.track, candidate_id)
                         if not candidate_track:
@@ -2421,84 +2532,19 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                                 'title': candidate_track['name'],
                                 'artist': ', '.join([a['name'] for a in candidate_track['artists']]),
                                 'spotify_url': candidate_track['external_urls']['spotify'],
-                                'based_on_artist': winner_name
+                                'based_on_artist': winner_name,
+                                'genres': matched_genres[:3]
                             })
                             print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (based on {winner_name}, distance: {candidate['similarity_distance']:.4f})")
+                            print(f"[INFO] Matched genres: {matched_genres[:3]}")
                             print(f"[PROGRESS] {len(selected_tracks)}/{max_songs} tracks selected")
                             track_found = True
                             break
                     
-                    if track_found:
-                        break
-                
-                # If not found, try with 2 genre matches (5 attempts)
-                if not track_found:
-                    print(f"[GENRE PASS 2/3] No match with 3+ genres. Trying with 2+ matching genres (max 5 attempts)...")
-                    for attempt in range(5):
-                        for candidate in similar_tracks:
-                            if track_found:
-                                break
-                            
-                            candidate_id = candidate['id']
-                            if candidate_id in all_excluded_track_ids:
-                                continue
-                            
-                            candidate_track = safe_spotify_call(sp.track, candidate_id)
-                            if not candidate_track:
-                                continue
-                            
-                            candidate_artist_ids = {a['id'] for a in candidate_track['artists']}
-                            
-                            # Basic validation (same as above)
-                            if generation_mode == 'liked_songs':
-                                if winner_aid in candidate_artist_ids:
-                                    continue
-                            else:
-                                if candidate_artist_ids & seed_artist_ids:
-                                    continue
-                            
-                            if generation_mode == 'liked_songs' and candidate_artist_ids & liked_songs_artist_ids:
-                                continue
-                            
-                            if candidate_artist_ids & seen_artist_ids:
-                                continue
-                            
-                            if max_follower_count is not None:
-                                main_artist_id = candidate_track['artists'][0]['id']
-                                main_artist_profile = safe_spotify_call(sp.artist, main_artist_id)
-                                if main_artist_profile and 'followers' in main_artist_profile:
-                                    follower_count = main_artist_profile['followers'].get('total', 0)
-                                    if follower_count > max_follower_count:
-                                        continue
-                            
-                            # Genre check: Need 2+ matches
-                            candidate_artist_name = candidate_track['artists'][0]['name']
-                            candidate_genres = get_artist_genres_live(sp, candidate_artist_name)
-                            genre_match, matched_genres = check_genre_match(seed_genres, candidate_genres, min_matches=2)
-                            
-                            if genre_match:
-                                print(f"[MATCH] ✓ Found {len(matched_genres)} genre matches (required 2): {matched_genres[:5]}")
-                                selected_tracks.append(candidate_track)
-                                all_excluded_track_ids.add(candidate_id)
-                                seen_artist_ids.update(candidate_artist_ids)
-                                added_songs.append({
-                                    'title': candidate_track['name'],
-                                    'artist': ', '.join([a['name'] for a in candidate_track['artists']]),
-                                    'spotify_url': candidate_track['external_urls']['spotify'],
-                                    'based_on_artist': winner_name
-                                })
-                                print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (based on {winner_name}, distance: {candidate['similarity_distance']:.4f})")
-                                print(f"[PROGRESS] {len(selected_tracks)}/{max_songs} tracks selected")
-                                track_found = True
-                                break
+                    # Phase 2: If no match after 100 songs, restart with 1 genre requirement indefinitely
+                    if not track_found:
+                        print(f"[GENRE PHASE 2] No 3-genre match after {songs_checked} songs. Searching with 1+ genre indefinitely...")
                         
-                        if track_found:
-                            break
-                
-                # If still not found, try with 1 genre match (5 attempts)
-                if not track_found:
-                    print(f"[GENRE PASS 3/3] No match with 2+ genres. Trying with 1+ matching genre (max 5 attempts)...")
-                    for attempt in range(5):
                         for candidate in similar_tracks:
                             if track_found:
                                 break
@@ -2513,7 +2559,7 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                             
                             candidate_artist_ids = {a['id'] for a in candidate_track['artists']}
                             
-                            # Basic validation (same as above)
+                            # Basic validation
                             if generation_mode == 'liked_songs':
                                 if winner_aid in candidate_artist_ids:
                                     continue
@@ -2549,19 +2595,18 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                                     'title': candidate_track['name'],
                                     'artist': ', '.join([a['name'] for a in candidate_track['artists']]),
                                     'spotify_url': candidate_track['external_urls']['spotify'],
-                                    'based_on_artist': winner_name
+                                    'based_on_artist': winner_name,
+                                    'genres': matched_genres[:3]
                                 })
                                 print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (based on {winner_name}, distance: {candidate['similarity_distance']:.4f})")
+                                print(f"[INFO] Matched genres: {matched_genres[:3]}")
                                 print(f"[PROGRESS] {len(selected_tracks)}/{max_songs} tracks selected")
                                 track_found = True
                                 break
-                        
-                        if track_found:
-                            break
-                
-                # If still no match after all 3 passes, move to next seed
-                if not track_found:
-                    print(f"[REROLL] No genre matches found after 3 passes (3→2→1), moving to next seed")
+                    
+                    # If still no match, move to next seed
+                    if not track_found:
+                        print(f"[REROLL] No genre matches found, moving to next seed")
             
             else:
                 # No genre matching - just validate and pick first valid candidate
@@ -2599,7 +2644,10 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                             if follower_count > max_follower_count:
                                 continue
                     
-                    # Valid candidate found!
+                    # Valid candidate found! (Fetch genres for display even without genre matching)
+                    candidate_artist_name = candidate_track['artists'][0]['name']
+                    candidate_genres = get_artist_genres_live(sp, candidate_artist_name)
+                    
                     selected_tracks.append(candidate_track)
                     all_excluded_track_ids.add(candidate_id)
                     seen_artist_ids.update(candidate_artist_ids)
@@ -2607,9 +2655,11 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                         'title': candidate_track['name'],
                         'artist': ', '.join([a['name'] for a in candidate_track['artists']]),
                         'spotify_url': candidate_track['external_urls']['spotify'],
-                        'based_on_artist': winner_name
+                        'based_on_artist': winner_name,
+                        'genres': candidate_genres[:3] if candidate_genres else []
                     })
                     print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (based on {winner_name}, distance: {candidate['similarity_distance']:.4f})")
+                    print(f"[INFO] Genres: {candidate_genres[:3] if candidate_genres else 'None'}")
                     print(f"[PROGRESS] {len(selected_tracks)}/{max_songs} tracks selected")
                     track_found = True
                     break
