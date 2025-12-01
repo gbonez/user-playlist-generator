@@ -476,14 +476,14 @@
 
                 const job = await response.json();
 
-                if (job.status === 'running') {
+                if (job.status === 'starting' || job.status === 'running') {
                     // Update status message dynamically
                     let statusMsg = job.status_message || 'Analyzing your music taste and finding new tracks...';
                     document.getElementById('statusMessage').textContent = statusMsg;
 
                     // Calculate dynamic progress based on tracks processed
                     let progressPercent = 60; // Default
-                    if (job.progress) {
+                    if (job.progress !== undefined) {
                         progressPercent = Math.min(95, 10 + (job.progress * 85)); // 10% start, up to 95%
                     }
                     document.getElementById('progressFill').style.width = `${progressPercent}%`;

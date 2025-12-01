@@ -457,6 +457,12 @@ def get_job_status(job_id):
         'elapsed_time': time.time() - job['started_at']
     }
     
+    # Include progress and status_message if available
+    if 'progress' in job:
+        response_data['progress'] = job['progress']
+    if 'status_message' in job:
+        response_data['status_message'] = job['status_message']
+    
     if job['status'] == 'completed' and job['result']:
         response_data['result'] = job['result']
     elif job['status'] == 'failed' and job['error']:

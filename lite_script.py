@@ -1895,6 +1895,8 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
             running_jobs[job_id]['progress'] = progress
             running_jobs[job_id]['status_message'] = status_message
             print(f"[PROGRESS] {progress:.1f}% - {status_message}")
+        else:
+            print(f"[PROGRESS] (No job tracking) {progress:.1f}% - {status_message}")
     
     try:
         follower_desc = f"max {max_follower_count:,} followers" if max_follower_count else "no follower limit"
@@ -2093,7 +2095,7 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
             if generation_mode == 'liked_songs':
                 winner_aid, winner_name, winner_info = winner
                 print(f"\n[SIMILARITY {idx+1}/{len(lottery_winners)}] Finding similar songs for lottery winner: '{winner_name}'")
-                update_progress(current_progress, f"Discovering songs similar to {winner_name}...")
+                update_progress(current_progress, f"Discovering songs similar to {winner_name} ({idx+1}/{max_songs})...")
                 
                 # Get a seed track from this artist (from user's liked songs)
                 seed_track_id = None
@@ -2125,8 +2127,8 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
             else:
                 # Alternative modes: winner IS the seed track ID
                 seed_track_id = winner
-                print(f"\n[SIMILARITY {idx+1}/{len(lottery_winners)}] Finding similar songs for seed track: {seed_track_id}")
-                update_progress(current_progress, f"Discovering songs from {source_description} ({idx+1}/{len(lottery_winners)})...")
+                print(f"\n[SIMILARITY {idx+1}/{max_songs}] Finding similar songs for seed track: {seed_track_id}")
+                update_progress(current_progress, f"Discovering songs from {source_description} ({idx+1}/{max_songs})...")
             
             # Ensure seed track is in database (Railway-friendly auto-processing)
             # Retry up to 5 times with different tracks if processing fails
