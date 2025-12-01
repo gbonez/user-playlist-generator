@@ -255,6 +255,78 @@ def get_spotify_artist_genres(sp, artist_name):
         print(f"[WARN] Spotify genres error for {artist_name}: {e}")
         return []
 
+def get_musicbrainz_artist_genres(artist_name):
+    """Fetch genres from MusicBrainz with rate limiting"""
+    try:
+        # MusicBrainz requires 1 req/sec rate limit
+        time.sleep(1.0)
+        
+        url = "https://musicbrainz.org/ws/2/artist/"
+        params = {
+            "query": f"artist:{artist_name}",
+            "fmt": "json",
+            "limit": 1
+        }
+        headers = {
+            "User-Agent": "PlaylistGenerator/1.0 (genre-fetcher)"
+        }
+        
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        data = response.json()
+        
+        if "artists" in data and len(data["artists"]) > 0:
+            artist = data["artists"][0]
+            genres = []
+            
+            # Extract tags (genres)
+            if "tags" in artist:
+                genres = [tag["name"].lower() for tag in artist["tags"][:5]]
+            
+            return genres
+        
+        return []
+    except Exception as e:
+        print(f"[WARN] MusicBrainz error for {artist_name}: {e}")
+        return []
+
+def get_discogs_artist_genres(artist_name):
+    """Fetch genres from Discogs API"""
+    try:
+        # Discogs rate limit: 60 requests per minute
+        time.sleep(1.0)
+        
+        url = "https://api.discogs.com/database/search"
+        params = {
+            "q": artist_name,
+            "type": "artist",
+            "per_page": 1
+        }
+        headers = {
+            "User-Agent": "PlaylistGenerator/1.0"
+        }
+        
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if "results" in data and len(data["results"]) > 0:
+                result = data["results"][0]
+                genres = []
+                
+                # Extract genres and styles
+                if "genre" in result:
+                    genres.extend([g.lower() for g in result["genre"]])
+                if "style" in result:
+                    genres.extend([s.lower() for s in result["style"][:3]])
+                
+                return genres[:5]
+        
+        return []
+    except Exception as e:
+        print(f"[WARN] Discogs error for {artist_name}: {e}")
+        return []
+
 def normalize_genre(genre):
     """Normalize genre names for better matching"""
     genre = genre.lower().strip()
@@ -271,76 +343,161 @@ def normalize_genre(genre):
         "alternative rock": "alt-rock",
         "hard rock": "hard-rock",
         "heavy metal": "metal",
-        "death metal": "metal",
-        "black metal": "metal",
+        "death metal": "death-metal",
+        "black metal": "black-metal",
+        "thrash metal": "thrash-metal",
+        "power metal": "power-metal",
+        "progressive metal": "progressive-metal",
     }
     
     return mappings.get(genre, genre)
 
-def get_or_create_artist_genres(sp, conn, artist_name):
+def expand_genre_variants(genres):
+    """Expand genres to include common variants and parent genres"""
+    expanded = set(genres)
+    
+    # Genre hierarchy and variants
+    expansions = {
+        'deathcore': ['metal', 'metalcore', 'death-metal'],
+        'metalcore': ['metal', 'hardcore'],
+        'death-metal': ['metal', 'extreme-metal'],
+        'black-metal': ['metal', 'extreme-metal'],
+        'thrash-metal': ['metal', 'speed-metal'],
+        'doom-metal': ['metal', 'stoner-rock'],
+        'power-metal': ['metal', 'symphonic-metal'],
+        'progressive-metal': ['metal', 'prog-rock'],
+        'indie-rock': ['indie', 'rock', 'alternative'],
+        'alt-rock': ['alternative', 'rock'],
+        'garage-rock': ['rock', 'indie-rock'],
+        'post-punk': ['punk', 'alternative'],
+        'punk-rock': ['punk', 'rock'],
+        'pop-punk': ['punk', 'pop-rock'],
+        'emo': ['punk', 'alternative'],
+        'screamo': ['punk', 'emo', 'hardcore'],
+        'indie-pop': ['indie', 'pop'],
+        'dream-pop': ['indie', 'shoegaze'],
+        'synth-pop': ['pop', 'electronic'],
+        'electro-pop': ['pop', 'electronic'],
+        'dance-pop': ['pop', 'dance'],
+        'hip-hop': ['rap', 'urban'],
+        'trap': ['hip-hop', 'rap'],
+        'drill': ['hip-hop', 'trap'],
+        'rnb': ['soul', 'urban'],
+        'neo-soul': ['soul', 'rnb'],
+        'funk': ['soul', 'disco'],
+        'house': ['electronic', 'dance'],
+        'techno': ['electronic', 'dance'],
+        'edm': ['electronic', 'dance'],
+        'dubstep': ['electronic', 'bass'],
+        'drum-n-bass': ['electronic', 'jungle'],
+        'ambient': ['electronic', 'experimental'],
+        'folk-rock': ['folk', 'rock'],
+        'country-rock': ['country', 'rock'],
+        'blues-rock': ['blues', 'rock'],
+        'jazz-fusion': ['jazz', 'fusion'],
+        'smooth-jazz': ['jazz', 'easy-listening'],
+    }
+    
+    for genre in list(expanded):
+        normalized = normalize_genre(genre)
+        if normalized in expansions:
+            expanded.update(expansions[normalized])
+    
+    return list(expanded)
+
+def merge_and_rank_genres(spotify_genres, lastfm_genres, musicbrainz_genres, discogs_genres):
     """
-    Get genres for an artist from database, or fetch and store if not exists
-    Returns list of up to 3 genres
+    Merge genres from multiple sources and pick top 3-5 most relevant
+    Prioritization:
+    1. Cross-source agreement (genre appears in multiple sources) - highest priority
+    2. Spotify genres (most accurate for music discovery)
+    3. Everything else (Last.fm, MusicBrainz, Discogs)
     """
-    try:
-        # Check if artist already has genres in database
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT genres FROM artist_genres 
-                WHERE artist_name = %s
-            """, (artist_name,))
-            row = cursor.fetchone()
-            
-            if row and row[0]:
-                print(f"[INFO] Found cached genres for {artist_name}: {row[0]}")
-                return row[0]
-        
-        # Not in database - fetch from multiple sources
-        print(f"[INFO] Fetching genres for new artist: {artist_name}")
-        
-        spotify_genres = get_spotify_artist_genres(sp, artist_name)
-        lastfm_genres = get_lastfm_artist_genres(artist_name)
-        
-        # Merge and rank genres
-        genre_scores = {}
-        
-        # Spotify genres (weight 3)
-        for genre in spotify_genres:
+    genre_scores = {}
+    genre_source_count = {}  # Track how many sources mention each genre
+    
+    # Track source counts for cross-validation
+    all_sources = [spotify_genres, lastfm_genres, musicbrainz_genres, discogs_genres]
+    for source in all_sources:
+        for genre in source:
             normalized = normalize_genre(genre)
-            genre_scores[normalized] = genre_scores.get(normalized, 0) + 3
+            genre_source_count[normalized] = genre_source_count.get(normalized, 0) + 1
+    
+    # Apply scoring with cross-source bonus
+    for genre, source_count in genre_source_count.items():
+        # Base score starts at 0
+        score = 0
         
-        # Last.fm genres (weight 2)
-        for genre in lastfm_genres:
-            normalized = normalize_genre(genre)
-            genre_scores[normalized] = genre_scores.get(normalized, 0) + 2
+        # Cross-source agreement gets massive bonus (10 points per additional source)
+        if source_count >= 2:
+            score += 10 * source_count
         
-        # Sort and take top 3
-        sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
-        top_genres = [genre for genre, score in sorted_genres[:3]]
+        # Spotify genres get weight 5
+        if genre in [normalize_genre(g) for g in spotify_genres]:
+            score += 5
         
-        if top_genres:
-            # Store in database
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO artist_genres (artist_name, genres)
-                    VALUES (%s, %s)
-                    ON CONFLICT (artist_name) DO UPDATE
-                    SET genres = EXCLUDED.genres
-                """, (artist_name, top_genres))
-            conn.commit()
-            print(f"[INFO] Stored {len(top_genres)} genres for {artist_name}: {top_genres}")
-            return top_genres
-        else:
-            print(f"[WARN] No genres found for {artist_name}")
-            return []
-            
-    except Exception as e:
-        print(f"[ERROR] Failed to get genres for {artist_name}: {e}")
-        return []
+        # Last.fm genres get weight 2
+        if genre in [normalize_genre(g) for g in lastfm_genres]:
+            score += 2
+        
+        # MusicBrainz genres get weight 2
+        if genre in [normalize_genre(g) for g in musicbrainz_genres]:
+            score += 2
+        
+        # Discogs genres get weight 2
+        if genre in [normalize_genre(g) for g in discogs_genres]:
+            score += 2
+        
+        genre_scores[genre] = score
+    
+    # Sort by score (highest first)
+    sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+    top_genres = [genre for genre, score in sorted_genres]
+    
+    # If we have fewer than 3 genres, expand with variants
+    if len(top_genres) < 3 and len(top_genres) > 0:
+        expanded = expand_genre_variants(top_genres)
+        # Add expanded genres that aren't already in the list
+        for genre in expanded:
+            if genre not in top_genres:
+                top_genres.append(genre)
+                if len(top_genres) >= 3:
+                    break
+    
+    # Return top 5 genres
+    return top_genres[:5]
+
+def get_artist_genres_live(sp, artist_name):
+    """
+    Fetch genres for an artist from all 4 sources in real-time (NO DATABASE)
+    Returns list of 3-5 most relevant genres with cross-source prioritization
+    """
+    print(f"[GENRE] Live fetching genres for: {artist_name}")
+    
+    # Fetch from all sources
+    spotify_genres = get_spotify_artist_genres(sp, artist_name)
+    print(f"  Spotify: {spotify_genres}")
+    
+    lastfm_genres = get_lastfm_artist_genres(artist_name)
+    print(f"  Last.fm: {lastfm_genres}")
+    
+    musicbrainz_genres = get_musicbrainz_artist_genres(artist_name)
+    print(f"  MusicBrainz: {musicbrainz_genres}")
+    
+    discogs_genres = get_discogs_artist_genres(artist_name)
+    print(f"  Discogs: {discogs_genres}")
+    
+    # Merge and rank with cross-source prioritization
+    top_genres = merge_and_rank_genres(spotify_genres, lastfm_genres, musicbrainz_genres, discogs_genres)
+    
+    print(f"  Final: {top_genres} ({len(top_genres)} total)")
+    
+    return top_genres
 
 def check_genre_match(seed_genres, candidate_genres):
     """
-    Check if at least 1 out of 3 genres match between seed and candidate
+    Check if at least 1 genre matches between seed and candidate
+    Uses genre expansion to include parent genres and variants for better matching
     Returns (bool: has_match, list: matched_genres)
     """
     if not seed_genres or not candidate_genres:
@@ -348,18 +505,25 @@ def check_genre_match(seed_genres, candidate_genres):
         print("[INFO] Genre data missing - skipping genre validation")
         return (True, [])
     
-    # Normalize genres
-    seed_set = set(normalize_genre(g) for g in seed_genres)
-    candidate_set = set(normalize_genre(g) for g in candidate_genres)
+    # Normalize and expand genres to include variants
+    seed_normalized = [normalize_genre(g) for g in seed_genres]
+    candidate_normalized = [normalize_genre(g) for g in candidate_genres]
     
-    # Find matches
-    matches = seed_set & candidate_set
+    seed_expanded = set(expand_genre_variants(seed_normalized))
+    candidate_expanded = set(expand_genre_variants(candidate_normalized))
+    
+    # Find matches (including expanded variants)
+    matches = seed_expanded & candidate_expanded
     
     if matches:
         print(f"[GENRE MATCH] Found {len(matches)} matching genres: {list(matches)}")
+        print(f"  Seed: {seed_genres} (expanded: {list(seed_expanded)[:5]}...)")
+        print(f"  Candidate: {candidate_genres} (expanded: {list(candidate_expanded)[:5]}...)")
         return (True, list(matches))
     else:
-        print(f"[GENRE MISMATCH] Seed genres {list(seed_set)} vs Candidate genres {list(candidate_set)}")
+        print(f"[GENRE MISMATCH] No overlap found")
+        print(f"  Seed genres: {seed_genres} (expanded: {list(seed_expanded)[:5]}...)")
+        print(f"  Candidate genres: {candidate_genres} (expanded: {list(candidate_expanded)[:5]}...)")
         return (False, [])
 
 def add_track_to_audio_features_db(conn, track_id, artist_name, track_name, spotify_uri, popularity, features, youtube_title):
@@ -381,12 +545,11 @@ def add_track_to_audio_features_db(conn, track_id, artist_name, track_name, spot
                 """, (first_artist,))
                 result = cursor.fetchone()
                 
-                # If artist not in DB or has <3 genres, try to populate
+                # Note: We no longer populate artist_genres database during track insertion
+                # Genre fetching is now done live during recommendation generation using get_artist_genres_live()
+                # This provides fresh, accurate genre data from all 4 sources (Spotify, Last.fm, MusicBrainz, Discogs)
                 if not result or (result[0] is not None and result[0] < 3):
-                    print(f"[INFO] Artist '{first_artist}' needs genre data, attempting to populate...")
-                    # Note: We need sp (Spotify client) to fetch genres
-                    # This will be handled by get_or_create_artist_genres which is already called elsewhere
-                    # For now, just log it - the actual population happens in get_or_create_artist_genres
+                    print(f"[INFO] Artist '{first_artist}' will use live genre fetching during recommendations")
         except Exception as e:
             print(f"[WARN] Could not check artist genres for {first_artist}: {e}")
     
@@ -2208,8 +2371,8 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                     print(f"[WARN] Could not fetch seed track info: {e}")
                     winner_name = "Unknown Artist"
             
-            # Get seed artist genres for validation
-            seed_genres = get_or_create_artist_genres(sp, conn, winner_name)
+            # Get seed artist genres for validation (live fetch - no database)
+            seed_genres = get_artist_genres_live(sp, winner_name)
             print(f"[INFO] Seed artist '{winner_name}' genres: {seed_genres}")
             
             # Get audio features for seed track from database
@@ -2289,10 +2452,11 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                         if follower_count > max_follower_count:
                             continue
                 
-                # 5. Check genre match (at least 1/3 genres must match) - if enabled
+                # 5. Check genre match (at least 1 overlapping genre) - if enabled
+                # Live fetch genres from all 4 sources, keep rerolling until match
                 if enable_genre_matching:
                     candidate_artist_name = candidate_track['artists'][0]['name']
-                    candidate_genres = get_or_create_artist_genres(sp, conn, candidate_artist_name)
+                    candidate_genres = get_artist_genres_live(sp, candidate_artist_name)
                     genre_match, matched_genres = check_genre_match(seed_genres, candidate_genres)
                     
                     if not genre_match:
