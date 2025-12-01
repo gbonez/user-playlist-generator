@@ -359,6 +359,44 @@ def clean_genre(genre):
     
     return genre
 
+def is_common_genre(genre):
+    """
+    Check if a genre is a common/generic genre (single word, highly popular)
+    Common genres are those that are very broad and appear frequently
+    """
+    # List of common single-word genres (after normalization)
+    common_genres = {
+        'pop', 'rock', 'hip-hop', 'rap', 'rnb', 'r-and-b',
+        'electronic', 'edm', 'dance', 'j-pop', 'jpop', 'k-pop', 'kpop',
+        'house', 'alternative', 'indie', 'country', 'jazz', 'blues', 'emo',
+        'classical', 'metal', 'punk', 'reggae', 'folk', 'soul', 'funk'
+    }
+    
+    genre_normalized = normalize_genre(genre) if genre else ''
+    return genre_normalized in common_genres
+
+def filter_genre_pool_by_frequency(genre_list, min_occurrences=2):
+    """
+    Filter genre pool to only include genres that appear at least min_occurrences times
+    This ensures we're matching on genres that are actually representative of the user's taste
+    
+    Args:
+        genre_list: List of genres (may contain duplicates)
+        min_occurrences: Minimum number of times a genre must appear to be included
+    
+    Returns:
+        List of genres that meet the frequency threshold
+    """
+    from collections import Counter
+    
+    genre_counts = Counter(genre_list)
+    filtered_genres = [genre for genre, count in genre_counts.items() if count >= min_occurrences]
+    
+    print(f"[GENRE FILTER] Original pool: {len(set(genre_list))} unique genres")
+    print(f"[GENRE FILTER] After frequency filter (>={min_occurrences}): {len(filtered_genres)} genres")
+    
+    return filtered_genres
+
 def normalize_genre(genre):
     """
     Normalize genre names for better matching
@@ -556,15 +594,22 @@ def get_artist_genres_live(sp, artist_name):
     
     return top_genres
 
-def check_genre_match(genre_pool, candidate_genres, min_matches=1):
+def check_genre_match(genre_pool, candidate_genres, min_matches=1, max_common_genres=1, strict_mode=True):
     """
     Check if at least min_matches genres match between genre pool and candidate
     Uses genre expansion to include parent genres and variants for better matching
+    
+    In strict mode with common genre limiting:
+    - Only allows max_common_genres common genres in the match (default 1)
+    - Prioritizes niche/specific genres over common ones
+    - Ideal result: 2 niche subgenres + 1 common genre
     
     Args:
         genre_pool: List of genres from entire artist pool (all lottery winners)
         candidate_genres: List of candidate artist genres
         min_matches: Minimum number of matching genres required (default 1)
+        max_common_genres: Maximum number of common genres allowed in match (default 1)
+        strict_mode: If True, enforce common genre quota (default True)
     
     Returns (bool: has_match, list: matched_genres)
     """
@@ -581,14 +626,48 @@ def check_genre_match(genre_pool, candidate_genres, min_matches=1):
     candidate_expanded = set(expand_genre_variants(candidate_normalized))
     
     # Find matches (including expanded variants)
-    matches = pool_expanded & candidate_expanded
+    all_matches = pool_expanded & candidate_expanded
     
-    if len(matches) >= min_matches:
-        print(f"[GENRE MATCH] Found {len(matches)} matching genres (required {min_matches}): {list(matches)[:5]}")
-        return (True, list(matches))
+    if not strict_mode or not all_matches:
+        # Loose mode or no matches - use original logic
+        if len(all_matches) >= min_matches:
+            print(f"[GENRE MATCH] Found {len(all_matches)} matching genres (required {min_matches}): {list(all_matches)[:5]}")
+            return (True, list(all_matches))
+        else:
+            print(f"[GENRE MISMATCH] Only {len(all_matches)} matches (required {min_matches})")
+            return (False, list(all_matches))
+    
+    # Strict mode: Filter matches to enforce common genre quota
+    common_matches = [g for g in all_matches if is_common_genre(g)]
+    niche_matches = [g for g in all_matches if not is_common_genre(g)]
+    
+    # Build final match list: prioritize niche genres, limit common genres
+    final_matches = list(niche_matches)  # Include all niche matches
+    
+    # Add common genres up to the quota, prioritizing most frequent in pool
+    if len(common_matches) > 0:
+        # Count frequency of common genres in pool to prioritize most representative ones
+        from collections import Counter
+        pool_counts = Counter(pool_normalized)
+        
+        # Sort common matches by frequency in pool (descending)
+        common_sorted = sorted(common_matches, key=lambda g: pool_counts.get(g, 0), reverse=True)
+        
+        # Add up to max_common_genres
+        for genre in common_sorted[:max_common_genres]:
+            final_matches.append(genre)
+    
+    # Check if we meet minimum requirement
+    if len(final_matches) >= min_matches:
+        niche_count = len(niche_matches)
+        common_count = min(len(common_matches), max_common_genres)
+        print(f"[GENRE MATCH] Found {len(final_matches)} matching genres (required {min_matches})")
+        print(f"  → {niche_count} niche + {common_count} common (max {max_common_genres}): {final_matches[:5]}")
+        return (True, final_matches)
     else:
-        print(f"[GENRE MISMATCH] Only {len(matches)} matches (required {min_matches})")
-        return (False, list(matches))
+        print(f"[GENRE MISMATCH] Only {len(final_matches)} matches after common genre filtering (required {min_matches})")
+        print(f"  → {len(niche_matches)} niche + {min(len(common_matches), max_common_genres)} common")
+        return (False, final_matches)
 
 def add_track_to_audio_features_db(conn, track_id, artist_name, track_name, spotify_uri, popularity, features, youtube_title):
     """
@@ -2012,7 +2091,7 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, 
             "tracks_removed": 0
         }
 
-def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None, min_liked_songs=3, generation_mode='liked_songs', source_url=None, job_id=None, running_jobs=None, enable_genre_matching=False, exclude_liked_songs=False, genre_matching_mode='strict'):
+def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None, min_liked_songs=3, generation_mode='liked_songs', source_url=None, job_id=None, running_jobs=None, enable_genre_matching=False, exclude_liked_songs=False, genre_matching_mode='strict', create_new_playlist=False):
     """
     Enhanced recommendation script using:
     1. Existing lottery system to pick artists (or custom source)
@@ -2023,7 +2102,7 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
     
     Args:
         sp: Spotify client
-        output_playlist_id: Playlist to add tracks to
+        output_playlist_id: Playlist to add tracks to (or None if create_new_playlist=True)
         max_songs: Number of songs to add
         lastfm_username: Optional Last.fm username for listening data
         max_follower_count: Maximum artist follower count (None = no limit)
@@ -2032,12 +2111,14 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         source_url: Spotify URL when mode is not 'liked_songs'
         exclude_liked_songs: Whether to exclude liked songs in non-liked-songs modes (default False)
         genre_matching_mode: 'strict' (require 3 matches) or 'loose' (require 1 match) - default 'strict'
+        create_new_playlist: If True, create playlist AFTER finding valid songs (default False)
     
     Returns:
         {
             'success': bool,
             'tracks_added': int,
             'added_songs': [{title, artist, spotify_url, based_on_artist}],
+            'playlist_id': str,
             'error': str (if failed)
         }
     """
@@ -2168,25 +2249,30 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         else:
             print(f"[INFO] Skipping upfront liked songs fetch (not in liked_songs mode) - will check after generation")
         
-        # Get current playlist tracks to avoid duplicates
+        # Get current playlist tracks to avoid duplicates (skip if creating new playlist)
         playlist_items = []
         playlist_track_ids = set()
-        offset = 0
-        while True:
-            items = safe_spotify_call(sp.playlist_items, output_playlist_id, offset=offset, limit=100)
-            if not items or not items.get("items"):
-                break
-            playlist_items.extend(items["items"])
-            for item in items["items"]:
-                track = item.get("track")
-                if track and track.get("id"):
-                    playlist_track_ids.add(track["id"])
-            if len(items["items"]) < 100:
-                break
-            offset += 100
+        existing_artist_ids = set()
         
-        existing_artist_ids = build_existing_artist_ids(playlist_items)
-        print(f"[INFO] Found {len(existing_artist_ids)} existing artists in target playlist")
+        if not create_new_playlist and output_playlist_id:
+            offset = 0
+            while True:
+                items = safe_spotify_call(sp.playlist_items, output_playlist_id, offset=offset, limit=100)
+                if not items or not items.get("items"):
+                    break
+                playlist_items.extend(items["items"])
+                for item in items["items"]:
+                    track = item.get("track")
+                    if track and track.get("id"):
+                        playlist_track_ids.add(track["id"])
+                if len(items["items"]) < 100:
+                    break
+                offset += 100
+            
+            existing_artist_ids = build_existing_artist_ids(playlist_items)
+            print(f"[INFO] Found {len(existing_artist_ids)} existing artists in target playlist")
+        else:
+            print(f"[INFO] Creating new playlist - no existing tracks to check")
         
         # Prepare seed selection based on mode
         if generation_mode == 'liked_songs':
@@ -2232,7 +2318,8 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         
         # ===== BUILD GENRE POOL FROM ALL LOTTERY WINNERS =====
         # Collect all genres from all lottery winners to use as the genre pool
-        genre_pool = set()
+        # Keep duplicates initially to filter by frequency later
+        genre_pool_with_duplicates = []
         
         if enable_genre_matching:
             print(f"\n[GENRE POOL] Collecting genres from all {len(lottery_winners)} lottery winners...")
@@ -2242,7 +2329,7 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 for winner_aid, winner_name, winner_info in lottery_winners:
                     winner_genres = get_artist_genres_live(sp, winner_name)
                     if winner_genres:
-                        genre_pool.update(winner_genres)
+                        genre_pool_with_duplicates.extend(winner_genres)  # Keep duplicates for frequency counting
                         print(f"  '{winner_name}': {winner_genres}")
             else:
                 # For alternative modes: lottery_winners are track IDs
@@ -2253,18 +2340,26 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                             seed_artist_name = seed_track['artists'][0]['name']
                             seed_genres = get_artist_genres_live(sp, seed_artist_name)
                             if seed_genres:
-                                genre_pool.update(seed_genres)
+                                genre_pool_with_duplicates.extend(seed_genres)  # Keep duplicates for frequency counting
                                 print(f"  '{seed_artist_name}': {seed_genres}")
                     except Exception as e:
                         print(f"[WARN] Could not fetch genres for seed track {seed_track_id}: {e}")
             
-            genre_pool = list(genre_pool)
-            print(f"[GENRE POOL] Collected {len(genre_pool)} unique genres from all lottery winners: {genre_pool[:10]}...")
+            print(f"[GENRE POOL] Collected {len(genre_pool_with_duplicates)} total genres ({len(set(genre_pool_with_duplicates))} unique)")
+            
+            # Filter by frequency: only keep genres that appear at least 2 times
+            # This ensures we're matching on genres that are actually representative
+            if genre_pool_with_duplicates:
+                genre_pool = filter_genre_pool_by_frequency(genre_pool_with_duplicates, min_occurrences=2)
+                print(f"[GENRE POOL] Final filtered pool: {len(genre_pool)} genres: {genre_pool[:10]}...")
+            else:
+                genre_pool = []
             
             if not genre_pool:
-                print(f"[WARN] No genres found in genre pool - will skip genre matching and use distance only")
+                print(f"[WARN] No genres found in genre pool after filtering - will skip genre matching and use distance only")
         else:
             print(f"[INFO] Genre matching disabled - will use distance only")
+            genre_pool = []
         
         # For each seed, find similar songs using mathematical similarity
         selected_tracks = []
@@ -2550,18 +2645,24 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                         break
                 else:
                     # Genre pool has genres - use genre matching with genre pool
-                    # Strict mode: Always require 3 matches
-                    # Loose mode: Always require 1 match
+                    # Strict mode: Always require 3 matches, max 1 common genre
+                    # Loose mode: Always require 1 match, no common genre restriction
                     
-                    # Determine minimum matches based on mode
+                    # Determine minimum matches and restrictions based on mode
                     if genre_matching_mode == 'loose':
                         min_required_matches = 1
+                        max_common_genres = 999  # No restriction in loose mode
                         mode_description = "LOOSE"
+                        strict_common_limit = False
                     else:
                         min_required_matches = 3
+                        max_common_genres = 1  # Limit to 1 common genre in strict mode
                         mode_description = "STRICT"
+                        strict_common_limit = True
                     
-                    print(f"[GENRE MATCHING] Searching with {mode_description} mode (require {min_required_matches} genre matches from pool of {len(genre_pool)} genres)...")
+                    print(f"[GENRE MATCHING] Searching with {mode_description} mode (require {min_required_matches} genre matches from pool of {len(genre_pool)} genres)")
+                    if strict_common_limit:
+                        print(f"  → Enforcing max {max_common_genres} common genre per match (ideally 2 niche + 1 common)")
                     
                     for candidate in similar_tracks:
                         if track_found:
@@ -2599,10 +2700,16 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                                 if follower_count > max_follower_count:
                                     continue
                         
-                        # Genre check: Use genre pool instead of individual seed genres
+                        # Genre check: Use genre pool with common genre limiting
                         candidate_artist_name = candidate_track['artists'][0]['name']
                         candidate_genres = get_artist_genres_live(sp, candidate_artist_name)
-                        genre_match, matched_genres = check_genre_match(genre_pool, candidate_genres, min_matches=min_required_matches)
+                        genre_match, matched_genres = check_genre_match(
+                            genre_pool, 
+                            candidate_genres, 
+                            min_matches=min_required_matches,
+                            max_common_genres=max_common_genres,
+                            strict_mode=strict_common_limit
+                        )
                         
                         if genre_match:
                             print(f"[MATCH] ✓ Found {len(matched_genres)} genre matches (required {min_required_matches}): {matched_genres[:5]}")
@@ -2724,8 +2831,45 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         else:
             print(f"\n[SUCCESS] ✓ Found all {len(selected_tracks)}/{max_songs} requested tracks!")
         
+        # Create new playlist AFTER finding valid songs (if requested)
+        if create_new_playlist and selected_tracks:
+            print(f"\n[INFO] Creating new playlist with {len(selected_tracks)} validated songs...")
+            update_progress(85, f"Creating playlist with {len(selected_tracks)} songs...")
+            try:
+                user = sp.current_user()
+                new_playlist = sp.user_playlist_create(
+                    user=user['id'],
+                    name='Enhanced Recs ⚙️',
+                    public=True,
+                    description='Playlist of personalized music recs generated from https://gbonez.github.io/user-playlist-generator/'
+                )
+                output_playlist_id = new_playlist['id']
+                print(f"[SUCCESS] ✓ Created new playlist: {new_playlist['name']} | ID: {output_playlist_id}")
+                
+                # Update running job with playlist ID
+                if job_id and running_jobs is not None:
+                    running_jobs[job_id]['playlist_id'] = output_playlist_id
+                    
+            except Exception as e:
+                print(f"[ERROR] Failed to create playlist: {e}")
+                return {
+                    "success": False,
+                    "error": f"Failed to create playlist: {str(e)}",
+                    "tracks_added": 0,
+                    "added_songs": []
+                }
+        
         # Add all selected tracks to playlist
         if selected_tracks:
+            if not output_playlist_id:
+                print("[ERROR] No playlist ID available to add tracks")
+                return {
+                    "success": False,
+                    "error": "No playlist ID provided and playlist creation failed",
+                    "tracks_added": 0,
+                    "added_songs": []
+                }
+            
             print(f"\n[INFO] Adding {len(selected_tracks)} tracks to playlist...")
             update_progress(90, f"Adding {len(selected_tracks)} tracks to your playlist...")
             track_uris = [track["uri"] for track in selected_tracks]

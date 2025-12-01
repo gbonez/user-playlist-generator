@@ -375,26 +375,12 @@ def run_script():
                 thread_sp = get_spotify_client(token_info)
                 thread_user = thread_sp.current_user()
                 
-                # Create new playlist if needed (BEFORE discovery to get the ID)
-                actual_playlist_id = playlist_id
-                if create_new:
-                    try:
-                        new_playlist = thread_sp.user_playlist_create(
-                            user=thread_user['id'],
-                            name='Enhanced Recs ⚙️',
-                            public=True,
-                            description='Playlist of personalized music recs generated from https://gbonez.github.io/user-playlist-generator/'
-                        )
-                        actual_playlist_id = new_playlist['id']
-                        running_jobs[job_id]['playlist_id'] = actual_playlist_id
-                        print(f"✅ Created new playlist: {new_playlist['name']} | ID: {actual_playlist_id}")
-                    except Exception as e:
-                        running_jobs[job_id]['status'] = 'failed'
-                        running_jobs[job_id]['error'] = f'Failed to create playlist: {str(e)}'
-                        return
-                
                 # Import new enhanced recommendation function
                 from lite_script import run_enhanced_recommendation_script
+                
+                # If creating new playlist, pass None as playlist_id initially
+                # The script will return tracks, then we create the playlist
+                actual_playlist_id = playlist_id if not create_new else None
                 
                 # Run the enhanced script with mathematical similarity
                 result = run_enhanced_recommendation_script(
@@ -409,7 +395,8 @@ def run_script():
                     job_id=job_id,
                     running_jobs=running_jobs,
                     enable_genre_matching=enable_genre_matching,
-                    exclude_liked_songs=exclude_liked_songs
+                    exclude_liked_songs=exclude_liked_songs,
+                    create_new_playlist=create_new  # Pass flag to script
                 )
                 
                 running_jobs[job_id]['result'] = result
