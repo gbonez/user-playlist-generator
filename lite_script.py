@@ -2222,12 +2222,35 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         seen_artist_ids = set(existing_artist_ids)
         all_excluded_track_ids = liked_track_ids | playlist_track_ids
         
+        # For non-liked_songs modes: collect all artist IDs from seed tracks to exclude from results
+        seed_artist_ids = set()
+        if generation_mode != 'liked_songs':
+            print(f"[INFO] Collecting artist IDs from seed tracks to exclude from recommendations...")
+            for seed_track_id in seed_track_ids:
+                try:
+                    seed_track = safe_spotify_call(sp.track, seed_track_id)
+                    if seed_track and 'artists' in seed_track:
+                        for artist in seed_track['artists']:
+                            if artist.get('id'):
+                                seed_artist_ids.add(artist['id'])
+                except Exception as e:
+                    print(f"[WARN] Could not fetch artist info for seed track {seed_track_id}: {e}")
+            print(f"[INFO] Will exclude {len(seed_artist_ids)} seed artists from recommendations")
+        
         # Track genre matching attempts for strict mode
         genre_match_attempts = {}  # {seed_index: attempts_count}
         required_genre_matches = {}  # {seed_index: min_matches_required}
         
+        # Main discovery loop: Keep iterating until we have exactly max_songs valid tracks
+        # This loop will automatically reroll and generate new seeds if needed
+        # to guarantee we reach the target count (unless we completely exhaust all options)
         idx = 0
         while len(selected_tracks) < max_songs and idx < len(lottery_winners) * 3:  # Allow more iterations for rerolls
+            # Double-check at start of each iteration to ensure we stop at exactly max_songs
+            if len(selected_tracks) >= max_songs:
+                print(f"[INFO] Target of {max_songs} tracks reached, stopping iteration")
+                break
+            
             if idx >= len(lottery_winners):
                 # Need to reroll - generate new lottery winner
                 print(f"\n[REROLL] Need more tracks ({len(selected_tracks)}/{max_songs}), generating new lottery winner...")
@@ -2432,11 +2455,18 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 candidate_artist_ids = {a['id'] for a in candidate_track['artists']}
                 
                 # Validation checks
-                # 1. Not from seed artist (only for liked_songs mode)
-                if generation_mode == 'liked_songs' and winner_aid in candidate_artist_ids:
-                    continue
+                # 1. Not from seed artist (for liked_songs mode: check winner_aid, for other modes: check seed_artist_ids)
+                if generation_mode == 'liked_songs':
+                    if winner_aid in candidate_artist_ids:
+                        print(f"[SKIP] Candidate is by seed artist {winner_name}")
+                        continue
+                else:
+                    # For track/artist/album/playlist modes: exclude ALL artists from the source
+                    if candidate_artist_ids & seed_artist_ids:
+                        print(f"[SKIP] Candidate is by a seed artist (from input {generation_mode})")
+                        continue
                 
-                # 2. Not from liked songs artists (only for liked_songs mode)
+                # 2. Not from liked songs artists (only for liked_songs mode or if exclude_liked_songs enabled)
                 if generation_mode == 'liked_songs' and candidate_artist_ids & liked_songs_artist_ids:
                     continue
                 
@@ -2505,14 +2535,15 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (based on {winner_name}, distance: {candidate['similarity_distance']:.4f})")
                 print(f"[PROGRESS] {len(selected_tracks)}/{max_songs} tracks selected")
                 
-                # Move to next seed
+                # Move to next seed and break from candidate loop
                 idx += 1
                 break
-            else:
-                # No valid candidate found in similar tracks - need to try next seed
-                if not similar_tracks or candidate == similar_tracks[-1]:
-                    print(f"[WARN] No valid candidates found for seed {winner_name}, moving to next seed")
-                    idx += 1
+            
+        # If we finished checking all candidates without finding a valid one, move to next seed
+        else:
+            # This else clause executes if the for loop completes without breaking
+            print(f"[WARN] No valid candidates found for seed {winner_name}, moving to next seed")
+            idx += 1
         
         conn.close()
         
