@@ -6,5 +6,7 @@ psycopg2-binary==2.9.9
 yt-dlp
 librosa
 soundfile
+audioread
+pydub
 numpy
 numba

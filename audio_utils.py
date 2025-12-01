@@ -256,6 +256,7 @@ def download_and_analyze_audio(video_id, track_name, artist_name):
         return None
     
     temp_files = []
+    downloaded_file = None
     
     try:
         import random
@@ -275,14 +276,21 @@ def download_and_analyze_audio(video_id, track_name, artist_name):
         
         # Download
         try:
+            print(f"[DEBUG] Downloading from YouTube video ID: {video_id}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
                 downloaded_file = ydl.prepare_filename(info)
+            print(f"[DEBUG] Downloaded to: {downloaded_file}")
+            print(f"[DEBUG] File exists: {os.path.exists(downloaded_file)}, Size: {os.path.getsize(downloaded_file) if os.path.exists(downloaded_file) else 0} bytes")
         except Exception as e:
             error_msg = str(e).lower()
             if 'rate limit' in error_msg or '429' in error_msg:
                 raise YouTubeRateLimitError(f"YouTube rate limit: {e}")
+            print(f"[ERROR] Download failed: {e}")
             raise
+        
+        if not os.path.exists(downloaded_file):
+            raise Exception(f"Downloaded file not found: {downloaded_file}")
         
         temp_files.append(downloaded_file)
         
@@ -291,21 +299,36 @@ def download_and_analyze_audio(video_id, track_name, artist_name):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             
-            # Get duration and analyze middle portion
-            duration_full = librosa.get_duration(path=downloaded_file)
-            
-            if duration_full <= 120:
-                duration = 30.0
-            else:
-                duration = 60.0
-            
-            offset = max(0, (duration_full - duration) / 2)
-            y, sr = librosa.load(downloaded_file, offset=offset, duration=duration)
+            try:
+                print(f"[DEBUG] Loading audio file with librosa...")
+                # Get duration and analyze middle portion
+                duration_full = librosa.get_duration(path=downloaded_file)
+                print(f"[DEBUG] Audio duration: {duration_full:.2f} seconds")
+                
+                if duration_full <= 120:
+                    duration = 30.0
+                else:
+                    duration = 60.0
+                
+                offset = max(0, (duration_full - duration) / 2)
+                print(f"[DEBUG] Analyzing {duration}s segment starting at {offset}s")
+                y, sr = librosa.load(downloaded_file, offset=offset, duration=duration)
+                print(f"[DEBUG] Loaded audio: {len(y)} samples at {sr} Hz")
+            except Exception as e:
+                print(f"[ERROR] Librosa failed to load audio: {type(e).__name__}: {e}")
+                print(f"[ERROR] This usually means FFmpeg is not available or the audio file is corrupted")
+                raise
         
         # Extract features
+        print(f"[DEBUG] Extracting audio features...")
         features = extract_audio_features(y, sr)
+        print(f"[DEBUG] Features extracted successfully")
         
         return features
+    
+    except Exception as e:
+        print(f"[ERROR] download_and_analyze_audio failed for '{track_name}' by {artist_name}: {type(e).__name__}: {e}")
+        raise
     
     finally:
         # Clean up temp files

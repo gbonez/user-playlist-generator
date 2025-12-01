@@ -302,9 +302,15 @@ def run_script():
     lastfm_username = (data.get('lastfm_username') or '').strip()
     max_follower_count = data.get('max_follower_count')  # Can be None for no limit
     create_new = data.get('create_new', False)  # Whether to create new playlist
+    min_liked_songs = int(data.get('min_liked_songs', 3))  # Minimum liked songs per artist
+    generation_mode = data.get('generation_mode', 'liked_songs')  # Generation mode
+    source_url = (data.get('source_url') or '').strip()  # Source URL for non-liked-songs modes
     
     if max_songs < 1 or max_songs > 50:
         return jsonify({'error': 'Max songs must be between 1 and 50'}), 400
+    
+    if min_liked_songs < 1 or min_liked_songs > 20:
+        return jsonify({'error': 'Minimum liked songs must be between 1 and 20'}), 400
     
     try:
         # Create Spotify client
@@ -345,6 +351,9 @@ def run_script():
             'lastfm_username': lastfm_username if lastfm_username else None,
             'max_follower_count': max_follower_count,
             'create_new': create_new,
+            'min_liked_songs': min_liked_songs,
+            'generation_mode': generation_mode,
+            'source_url': source_url if source_url else None,
             'user_id': current_user['id'],
             'started_at': time.time(),
             'result': None,
@@ -387,7 +396,10 @@ def run_script():
                     output_playlist_id=actual_playlist_id,
                     max_songs=max_songs,
                     lastfm_username=lastfm_username if lastfm_username else None,
-                    max_follower_count=max_follower_count
+                    max_follower_count=max_follower_count,
+                    min_liked_songs=min_liked_songs,
+                    generation_mode=generation_mode,
+                    source_url=source_url if source_url else None
                 )
                 
                 running_jobs[job_id]['result'] = result

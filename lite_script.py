@@ -41,6 +41,37 @@ except ImportError:
         pass
 # ==== HELPER FUNCTIONS ====
 
+def parse_spotify_url(url):
+    """
+    Parse a Spotify URL and extract type and ID
+    Handles URLs with query parameters like ?si=...
+    
+    Args:
+        url: Spotify URL (e.g., https://open.spotify.com/track/xxx?si=yyy)
+    
+    Returns:
+        tuple: (type, id) where type is 'track', 'artist', 'playlist', or 'user'
+               Returns (None, None) if invalid
+    
+    Examples:
+        https://open.spotify.com/track/7fVvUY3EOoqc8lEwUamIMO?si=xxx -> ('track', '7fVvUY3EOoqc8lEwUamIMO')
+        https://open.spotify.com/artist/1cLXpQsVOMiqdZzlSsyy8u?si=xxx -> ('artist', '1cLXpQsVOMiqdZzlSsyy8u')
+        https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=xxx -> ('playlist', '37i9dQZF1DXcBWIGoYBM5M')
+    """
+    import re
+    
+    # Remove query parameters (everything after ?)
+    url = url.split('?')[0]
+    
+    # Pattern: https://open.spotify.com/{type}/{id}
+    pattern = r'https://open\.spotify\.com/(track|artist|playlist|user)/([a-zA-Z0-9]+)'
+    match = re.match(pattern, url)
+    
+    if match:
+        return match.group(1), match.group(2)
+    
+    return None, None
+
 # Fallback stub for Spotify similarity if audio features are unavailable
 def get_similar_tracks_by_audio_features_spotify_fallback(sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids=None, max_follower_count=None):
     print("[WARN] Fallback: audio features similarity not available, using Spotify API only.")
@@ -1144,13 +1175,21 @@ def build_artist_play_map(recent_tracks, days_limit=365):
     
     return artist_play_map
 
-def build_artist_list_from_liked_songs(sp, artist_play_map=None):
+def build_artist_list_from_liked_songs(sp, artist_play_map=None, min_liked_songs=3):
     """
     Build fresh artist list from user's current liked songs
     Filters to only include artists with listening activity in last 6 months
-    Returns dict of {artist_id: {name, total_liked, weight}}
+    And filters to only artists with at least min_liked_songs liked tracks
+    
+    Args:
+        sp: Spotify client
+        artist_play_map: Optional map of artist listening data
+        min_liked_songs: Minimum number of liked songs required per artist (default 3)
+    
+    Returns:
+        dict of {artist_id: {name, total_liked, weight}}
     """
-    print("[INFO] Building artist list from liked songs...")
+    print(f"[INFO] Building artist list from liked songs (minimum {min_liked_songs} liked songs per artist)...")
     artist_counts = {}
     
     try:
@@ -1187,6 +1226,17 @@ def build_artist_list_from_liked_songs(sp, artist_play_map=None):
                 time.sleep(0.5)
         
         print(f"[INFO] Found {len(artist_counts)} unique artists in liked songs")
+        
+        # Filter by minimum liked songs
+        if min_liked_songs > 1:
+            original_count = len(artist_counts)
+            artist_counts = {
+                aid: info for aid, info in artist_counts.items()
+                if info["total_liked"] >= min_liked_songs
+            }
+            filtered_count = original_count - len(artist_counts)
+            print(f"[INFO] Filtered out {filtered_count} artists with < {min_liked_songs} liked songs")
+            print(f"[INFO] {len(artist_counts)} artists remaining")
         
         # Filter to only artists with listening activity in last 6 months
         # Spotify's medium_term is approximately 6 months, which is the closest metric available
@@ -1507,10 +1557,10 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, 
             "tracks_removed": 0
         }
 
-def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None):
+def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None, min_liked_songs=3, generation_mode='liked_songs', source_url=None):
     """
     Enhanced recommendation script using:
-    1. Existing lottery system to pick artists
+    1. Existing lottery system to pick artists (or custom source)
     2. Mathematical similarity from database for each winner
     3. Validation and deduplication
     4. Returns list of added songs for display
@@ -1521,12 +1571,15 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         max_songs: Number of songs to add
         lastfm_username: Optional Last.fm username for listening data
         max_follower_count: Maximum artist follower count (None = no limit)
+        min_liked_songs: Minimum liked songs per artist (default 3)
+        generation_mode: 'liked_songs', 'track', 'artist', or 'playlist'
+        source_url: Spotify URL when mode is not 'liked_songs'
     
     Returns:
         {
             'success': bool,
             'tracks_added': int,
-            'added_songs': [{title, artist, spotify_url, similarity_distance}],
+            'added_songs': [{title, artist, spotify_url, based_on_artist}],
             'error': str (if failed)
         }
     """
@@ -1555,16 +1608,16 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
             print("[INFO] No Last.fm username provided. Using Spotify listening data...")
             artist_play_map = fetch_spotify_listening_data(sp)
         
-        # Build fresh artist list from current liked songs
+        # Build fresh artist list from current liked songs (with minimum filter)
         print("[INFO] Scanning liked songs to build artist list...")
-        artists_data = build_artist_list_from_liked_songs(sp, artist_play_map)
+        artists_data = build_artist_list_from_liked_songs(sp, artist_play_map, min_liked_songs)
         
         if not artists_data:
             print("[ERROR] No artists found in liked songs!")
             conn.close()
             return {
                 "success": False,
-                "error": "No artists found in your liked songs. Please add some liked songs first.",
+                "error": f"No artists found with at least {min_liked_songs} liked songs. Try lowering the minimum liked songs filter.",
                 "tracks_added": 0,
                 "added_songs": []
             }
@@ -1677,9 +1730,54 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 continue
             
             # Ensure seed track is in database (Railway-friendly auto-processing)
+            # Retry up to 5 times with different tracks from the same artist if processing fails
             print(f"[INFO] Checking if seed track is in database...")
-            if not ensure_track_in_db(sp, conn, seed_track_id):
-                print(f"[WARN] Could not process seed track {seed_track_id}, skipping {winner_name}")
+            seed_processed = False
+            retry_count = 0
+            max_retries = 5
+            
+            while not seed_processed and retry_count < max_retries:
+                if ensure_track_in_db(sp, conn, seed_track_id):
+                    seed_processed = True
+                    break
+                else:
+                    retry_count += 1
+                    print(f"[WARN] Failed to process seed track {seed_track_id} (attempt {retry_count}/{max_retries})")
+                    
+                    if retry_count < max_retries:
+                        # Try to find another track from the same artist
+                        print(f"[INFO] Looking for another seed track from {winner_name}...")
+                        old_seed = seed_track_id
+                        seed_track_id = None
+                        
+                        try:
+                            offset = 0
+                            while True:
+                                results = safe_spotify_call(sp.current_user_saved_tracks, limit=50, offset=offset)
+                                if not results or not results.get("items"):
+                                    break
+                                for item in results["items"]:
+                                    track = item.get("track")
+                                    if track and track.get("id") and track["id"] != old_seed:
+                                        track_artist_ids = {a["id"] for a in track["artists"]}
+                                        if winner_aid in track_artist_ids:
+                                            seed_track_id = track["id"]
+                                            print(f"[INFO] Trying alternative seed: {track['name']} by {winner_name}")
+                                            break
+                                if seed_track_id:
+                                    break
+                                if len(results["items"]) < 50:
+                                    break
+                                offset += 50
+                        except Exception as e:
+                            print(f"[WARN] Error finding alternative seed track: {e}")
+                        
+                        if not seed_track_id:
+                            print(f"[WARN] No more alternative tracks available for {winner_name}")
+                            break
+            
+            if not seed_processed:
+                print(f"[WARN] Failed to process any seed track for {winner_name} after {max_retries} attempts, re-rolling lottery")
                 continue
             
             # Get audio features for seed track from database
@@ -1764,15 +1862,15 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 all_excluded_track_ids.add(candidate_id)
                 seen_artist_ids.update(candidate_artist_ids)
                 
-                # Add to display list
+                # Add to display list with seed artist info
                 added_songs.append({
                     'title': candidate_track['name'],
                     'artist': ', '.join([a['name'] for a in candidate_track['artists']]),
                     'spotify_url': candidate_track['external_urls']['spotify'],
-                    'similarity_distance': round(candidate['similarity_distance'], 4)
+                    'based_on_artist': winner_name
                 })
                 
-                print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (distance: {candidate['similarity_distance']:.4f})")
+                print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (based on {winner_name}, distance: {candidate['similarity_distance']:.4f})")
                 break
         
         conn.close()

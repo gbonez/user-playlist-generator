@@ -50,8 +50,40 @@
                     </div>
 
                     <div class="form-group">
+                        <label for="generationMode">Generation Mode</label>
+                        <select id="generationMode" class="input" onchange="toggleSourceUrlInput()">
+                            <option value="liked_songs">Based on Liked Songs</option>
+                            <option value="track">Based on Single Track</option>
+                            <option value="artist">Based on Artist</option>
+                            <option value="playlist">Based on Playlist</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group hidden" id="sourceUrlGroup">
+                        <label for="sourceUrl">Spotify URL</label>
+                        <input type="text" id="sourceUrl" class="input"
+                            placeholder="Paste Spotify track/artist/playlist URL">
+                        <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.6); margin-top: 4px;">
+                            Example: https://open.spotify.com/track/...
+                        </div>
+                    </div>
+
+                    <div class="form-group">
                         <label for="maxSongs">Number of Songs (1-50)</label>
                         <input type="number" id="maxSongs" class="input" min="1" max="50" value="10">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="minLikedSongs">Minimum Liked Songs per Artist: <span
+                                id="minLikedSongsText">3</span></label>
+                        <input type="range" id="minLikedSongs" min="1" max="20" value="3"
+                            oninput="updateMinLikedSongsText(this.value)"
+                            style="width: 100%; height: 8px; border-radius: 4px; background: linear-gradient(to right, #1db954, #9333ea); cursor: pointer; -webkit-appearance: none; appearance: none;">
+                        <div
+                            style="display: flex; justify-content: space-between; font-size: 0.75rem; color: rgba(255, 255, 255, 0.6); margin-top: 4px;">
+                            <span>Diverse (1)</span>
+                            <span>Focused (20)</span>
+                        </div>
                     </div>
 
                     <div class="form-group">
@@ -215,6 +247,20 @@
             playlistGroup.style.display = createNew ? 'none' : 'block';
         }
 
+        function toggleSourceUrlInput() {
+            const mode = document.getElementById('generationMode').value;
+            const urlGroup = document.getElementById('sourceUrlGroup');
+            if (mode === 'liked_songs') {
+                urlGroup.classList.add('hidden');
+            } else {
+                urlGroup.classList.remove('hidden');
+            }
+        }
+
+        function updateMinLikedSongsText(value) {
+            document.getElementById('minLikedSongsText').textContent = value;
+        }
+
         function updateNicheLevelText(value) {
             const labels = {
                 '1': 'Popular',
@@ -297,6 +343,9 @@
             const lastfmUsername = document.getElementById('lastfmUsername').value.trim();
             const nicheLevel = document.getElementById('nicheLevel').value;
             const maxFollowers = getNicheFollowerCount(nicheLevel);
+            const minLikedSongs = parseInt(document.getElementById('minLikedSongs').value);
+            const generationMode = document.getElementById('generationMode').value;
+            const sourceUrl = document.getElementById('sourceUrl').value.trim();
 
             // Hide previous results
             document.getElementById('addedSongsSection').classList.add('hidden');
@@ -304,6 +353,12 @@
 
             if (maxSongs < 1 || maxSongs > 50) {
                 alert('Number of songs must be between 1 and 50');
+                return;
+            }
+
+            // Validate source URL if not using liked songs
+            if (generationMode !== 'liked_songs' && !sourceUrl) {
+                alert('Please enter a Spotify URL for the selected generation mode');
                 return;
             }
 
@@ -336,7 +391,10 @@
                         max_songs: maxSongs,
                         lastfm_username: lastfmUsername || null,
                         max_follower_count: maxFollowers,
-                        create_new: createNew
+                        create_new: createNew,
+                        min_liked_songs: minLikedSongs,
+                        generation_mode: generationMode,
+                        source_url: sourceUrl || null
                     })
                 });
 
@@ -453,7 +511,7 @@
                                 <div style="color: rgba(255, 255, 255, 0.7); font-size: 0.9rem;">
                                     ${song.artist}
                                 </div>
-                                ${song.similarity_distance ? `<div style="color: rgba(255, 255, 255, 0.5); font-size: 0.8rem; margin-top: 4px;">Similarity: ${song.similarity_distance}</div>` : ''}
+                                ${song.based_on_artist ? `<div style="color: rgba(255, 255, 255, 0.5); font-size: 0.8rem; margin-top: 4px;">Based on: ${song.based_on_artist}</div>` : ''}
                             </div>
                             <a href="${song.spotify_url}" target="_blank" style="padding: 8px 16px; background: #1db954; color: white; text-decoration: none; border-radius: 20px; font-size: 0.85rem; font-weight: 600; transition: background 0.2s;" onmouseover="this.style.background='#1ed760'" onmouseout="this.style.background='#1db954'">
                                 Open in Spotify
