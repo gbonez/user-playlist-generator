@@ -85,6 +85,11 @@
                     <p id="statusMessage" class="status-message">Starting...</p>
                     <div id="resultDetails" class="result-details hidden"></div>
                 </div>
+
+                <div id="addedSongsSection" class="added-songs-section hidden">
+                    <h3>Added Songs ✨</h3>
+                    <div id="addedSongsList" class="added-songs-list"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -293,6 +298,10 @@
             const nicheLevel = document.getElementById('nicheLevel').value;
             const maxFollowers = getNicheFollowerCount(nicheLevel);
 
+            // Hide previous results
+            document.getElementById('addedSongsSection').classList.add('hidden');
+            document.getElementById('resultDetails').classList.add('hidden');
+
             if (maxSongs < 1 || maxSongs > 50) {
                 alert('Number of songs must be between 1 and 50');
                 return;
@@ -424,6 +433,36 @@
 
             if (result.message) {
                 html += `<li>${result.message}</li>`;
+            }
+
+            // Display added songs if available
+            if (result.added_songs && result.added_songs.length > 0) {
+                const addedSongsSection = document.getElementById('addedSongsSection');
+                const addedSongsList = document.getElementById('addedSongsList');
+
+                addedSongsSection.classList.remove('hidden');
+
+                let songsHtml = '';
+                result.added_songs.forEach((song, index) => {
+                    songsHtml += `
+                        <div class="song-item" style="padding: 12px; margin: 8px 0; background: rgba(255, 255, 255, 0.05); border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="font-weight: 600; font-size: 1rem; margin-bottom: 4px;">
+                                    ${index + 1}. ${song.title}
+                                </div>
+                                <div style="color: rgba(255, 255, 255, 0.7); font-size: 0.9rem;">
+                                    ${song.artist}
+                                </div>
+                                ${song.similarity_distance ? `<div style="color: rgba(255, 255, 255, 0.5); font-size: 0.8rem; margin-top: 4px;">Similarity: ${song.similarity_distance}</div>` : ''}
+                            </div>
+                            <a href="${song.spotify_url}" target="_blank" style="padding: 8px 16px; background: #1db954; color: white; text-decoration: none; border-radius: 20px; font-size: 0.85rem; font-weight: 600; transition: background 0.2s;" onmouseover="this.style.background='#1ed760'" onmouseout="this.style.background='#1db954'">
+                                Open in Spotify
+                            </a>
+                        </div>
+                    `;
+                });
+
+                addedSongsList.innerHTML = songsHtml;
             }
 
             html += '</ul>';

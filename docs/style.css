@@ -347,6 +347,39 @@ select.input {
     }
 }
 
+/* Added songs section */
+.added-songs-section {
+    margin-top: 2rem;
+    padding: 1.5rem;
+    background: var(--spotify-dark);
+    border-radius: 8px;
+}
+
+.added-songs-section.hidden {
+    display: none;
+}
+
+.added-songs-section h3 {
+    color: var(--spotify-green);
+    margin-bottom: 1rem;
+    font-size: 1.5rem;
+}
+
+.added-songs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.song-item {
+    transition: transform 0.2s, background 0.2s;
+}
+
+.song-item:hover {
+    transform: translateX(4px);
+    background: rgba(255, 255, 255, 0.08) !important;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .container {
@@ -359,5 +392,16 @@ select.input {
 
     .features {
         grid-template-columns: 1fr;
+    }
+
+    .song-item {
+        flex-direction: column;
+        align-items: flex-start !important;
+        gap: 12px;
+    }
+
+    .song-item a {
+        width: 100%;
+        text-align: center;
     }
 }

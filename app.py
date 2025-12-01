@@ -378,8 +378,11 @@ def run_script():
                         running_jobs[job_id]['error'] = f'Failed to create playlist: {str(e)}'
                         return
                 
-                # Run the lite script with the playlist ID
-                result = run_lite_script(
+                # Import new enhanced recommendation function
+                from lite_script import run_enhanced_recommendation_script
+                
+                # Run the enhanced script with mathematical similarity
+                result = run_enhanced_recommendation_script(
                     sp=thread_sp,
                     output_playlist_id=actual_playlist_id,
                     max_songs=max_songs,

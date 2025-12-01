@@ -176,7 +176,18 @@ rolled_tracks.json
 artists.json
 *.tmp
 temp/
-db creation/AUDIO_FEATURES_README.md
-db creation/build_audio_features_db.py
-db creation/find_similar_songs.py
-db creation/test_secrets.py
+test-output/
+
+# Cache files (keep at root level)
+.spotify_user_playlists_cache
+.spotify_cache
+.spotify_profile_crawler_cache
+.spotify_youtube_cache
+.test_cache
+
+# DB Creation folder - entire folder excluded except README
+db_creation/*
+!db_creation/README.md
+!db_creation/AUDIO_FEATURES_README.md
+!db_creation/YOUTUBE_LIBROSA_README.md
+!db_creation/DEVELOPMENT_MODE_INSTRUCTIONS.md

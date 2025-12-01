@@ -11,19 +11,40 @@ from spotipy.exceptions import SpotifyException
 import psycopg2
 import sys
 
-# Add db creation directory to path for imports
-sys.path.append(os.path.join(os.path.dirname(__file__), 'db creation'))
+# Import audio utilities (Railway-friendly, not gitignored)
 try:
-    from build_audio_features_youtube import (
-        search_youtube, 
-        download_and_analyze_audio, 
+    from audio_utils import (
+        search_youtube,
+        download_and_analyze_audio,
         extract_audio_features,
-        YouTubeRateLimitError
+        YouTubeRateLimitError,
+        process_track_for_db,
+        check_audio_processing_available
     )
-    AUDIO_FEATURES_AVAILABLE = True
+    AUDIO_FEATURES_AVAILABLE = check_audio_processing_available()
 except ImportError:
-    print("[WARN] Could not import audio feature extraction modules - similarity matching disabled")
+    print("[WARN] Could not import audio utilities - similarity matching disabled")
     AUDIO_FEATURES_AVAILABLE = False
+    
+    # Stub functions
+    def search_youtube(*args, **kwargs):
+        raise Exception("Audio utilities not available")
+    def download_and_analyze_audio(*args, **kwargs):
+        raise Exception("Audio utilities not available")
+    def extract_audio_features(*args, **kwargs):
+        raise Exception("Audio utilities not available")
+    def process_track_for_db(*args, **kwargs):
+        return None, None
+    def check_audio_processing_available():
+        return False
+    class YouTubeRateLimitError(Exception):
+        pass
+# ==== HELPER FUNCTIONS ====
+
+# Fallback stub for Spotify similarity if audio features are unavailable
+def get_similar_tracks_by_audio_features_spotify_fallback(sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids=None, max_follower_count=None):
+    print("[WARN] Fallback: audio features similarity not available, using Spotify API only.")
+    return None
 
 # ==== LITE SCRIPT CONFIG ====
 # This is a real-time version without any caching or data storage
@@ -132,6 +153,70 @@ def add_track_to_audio_features_db(conn, track_id, artist_name, track_name, spot
         print(f"[ERROR] Failed to insert track into database: {e}")
         conn.rollback()
         return None
+
+def ensure_track_in_db(sp, conn, track_id):
+    """
+    Ensure a track is in the database. If not, process and add it.
+    Railway-friendly: Works in serverless environment with limited storage.
+    
+    Args:
+        sp: Spotify client
+        conn: Database connection
+        track_id: Spotify track ID
+    
+    Returns:
+        True if track is in database (or was successfully added), False otherwise
+    """
+    if not AUDIO_FEATURES_AVAILABLE:
+        print("[WARN] Audio processing not available - skipping DB check")
+        return False
+    
+    # Check if track already exists
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM audio_features WHERE spotify_track_id = %s",
+                (track_id,)
+            )
+            if cursor.fetchone():
+                return True  # Already in database
+    except Exception as e:
+        print(f"[WARN] Error checking if track exists in DB: {e}")
+        return False
+    
+    # Track not in database - process it
+    print(f"[INFO] Track {track_id} not in database, processing now...")
+    
+    try:
+        # Use audio_utils to process track
+        track_info, features = process_track_for_db(sp, track_id)
+        
+        if not track_info or not features:
+            print(f"[WARN] Could not process track {track_id}")
+            return False
+        
+        # Add to database using add_track_to_audio_features_db
+        success = add_track_to_audio_features_db(
+            conn,
+            track_info['track_id'],
+            track_info['artist_name'],
+            track_info['track_name'],
+            track_info['spotify_uri'],
+            track_info['popularity'],
+            features,
+            track_info['youtube_title']
+        )
+        
+        if success:
+            print(f"[INFO] ✅ Successfully added track {track_id} to database")
+        
+        return success
+    except YouTubeRateLimitError:
+        print(f"[ERROR] YouTube rate limit hit while processing {track_id}")
+        return False
+    except Exception as e:
+        print(f"[ERROR] Failed to process track {track_id}: {e}")
+        return False
 
 def find_most_similar_track_in_db(conn, features, liked_track_ids, max_results=10):
     """
@@ -370,9 +455,7 @@ def get_similar_tracks_by_audio_features_db(sp, seed_track_id, existing_artist_i
     """
     if not AUDIO_FEATURES_AVAILABLE or not DATABASE_URL:
         print("[SKIP] Audio features analysis not available, falling back to Spotify API")
-        return get_similar_tracks_by_audio_features_spotify_fallback(
-            sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids, max_follower_count
-        )
+        return get_similar_tracks_by_audio_features_spotify_fallback(sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids, max_follower_count)
     
     try:
         print(f"[INFO] [DB-SIMILARITY] Analyzing seed track {seed_track_id[:10]}... with YouTube + librosa")
@@ -526,24 +609,14 @@ def get_similar_tracks_by_audio_features_db(sp, seed_track_id, existing_artist_i
                         conn.close()
                 except YouTubeRateLimitError as e:
                     print(f"[ERROR] YouTube rate limit hit: {e}")
-                    print("[INFO] Falling back to Spotify API recommendations")
-                    return get_similar_tracks_by_audio_features_spotify_fallback(
-                        sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids, max_follower_count
-                    )
+                    print("[INFO] Skipping this seed track due to YouTube rate limit.")
+                    return None
                 except Exception as e:
                     print(f"[ERROR] Error finding similar tracks by audio features (DB): {e}")
                     import traceback
                     traceback.print_exc()
                     return None
             # Fetch seed track genres from Last.fm (once, outside the loop)
-            print(f"[INFO] Fetching genres for seed track from Last.fm...")
-            seed_genres = get_lastfm_track_genres(artist_name, track_name)
-            if seed_genres:
-                print(f"[INFO] Seed track genres: {', '.join(seed_genres[:5])}")
-            else:
-                print(f"[WARN] No genre data available for seed track - will skip genre validation")
-            
-            # Try each similar track until we find one that passes validation
             for idx, similar_track_info in enumerate(similar_tracks_list, 1):
                 print(f"[INFO] Candidate {idx}: '{similar_track_info['track_name']}' by {similar_track_info['artist_name']} (distance: {similar_track_info['similarity_distance']:.4f})")
                 
@@ -594,62 +667,11 @@ def get_similar_tracks_by_audio_features_db(sp, seed_track_id, existing_artist_i
         
     except YouTubeRateLimitError as e:
         print(f"[ERROR] YouTube rate limit hit: {e}")
-        print("[INFO] Falling back to Spotify API recommendations")
-        return get_similar_tracks_by_audio_features_spotify_fallback(
-            sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids, max_follower_count
-        )
+        return None
     except Exception as e:
         print(f"[ERROR] Error finding similar tracks by audio features (DB): {e}")
         import traceback
         traceback.print_exc()
-        return None
-
-def get_similar_tracks_by_audio_features_spotify_fallback(sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids=None, max_follower_count=None):
-    """
-    Fallback method using Spotify's built-in recommendations API
-    (Original implementation as backup)
-    """
-    try:
-        print(f"[INFO] [FALLBACK] Using Spotify recommendations API for seed track {seed_track_id[:10]}...")
-        
-        # Get audio features for the seed track
-        features = safe_spotify_call(sp.audio_features, seed_track_id)
-        if not features or not features[0]:
-            print("[SKIP] Could not get audio features for seed track")
-            return None
-        
-        track_features = features[0]
-        
-        # Build recommendations using sonic profile
-        print(f"[INFO] Finding similar tracks (energy={track_features['energy']:.2f}, danceability={track_features['danceability']:.2f}, valence={track_features['valence']:.2f})...")
-        
-        recs = safe_spotify_call(
-            sp.recommendations,
-            seed_tracks=[seed_track_id],
-            limit=50,  # Get more to filter through
-            target_energy=track_features["energy"],
-            target_danceability=track_features["danceability"],
-            target_valence=track_features["valence"],
-            target_tempo=track_features["tempo"],
-            target_acousticness=track_features["acousticness"],
-            target_instrumentalness=track_features["instrumentalness"]
-        )
-        
-        if not recs or "tracks" not in recs:
-            print("[SKIP] No recommendations returned")
-            return None
-        
-        # Validate and find first valid track
-        for track in recs["tracks"]:
-            if validate_track_lite(track, existing_artist_ids, liked_songs_artist_ids, max_follower_count):
-                print(f"[SUCCESS] Found similar track: {track['name']} by {track['artists'][0]['name']}")
-                return track
-        
-        print(f"[INFO] No valid similar tracks found")
-        return None
-        
-    except Exception as e:
-        print(f"[ERROR] Error finding similar tracks by audio features (Spotify fallback): {e}")
         return None
 
 def get_random_liked_track_for_artist(sp, artist_id):
@@ -1483,6 +1505,311 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, 
             "error": str(e),
             "tracks_added": 0,
             "tracks_removed": 0
+        }
+
+def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None):
+    """
+    Enhanced recommendation script using:
+    1. Existing lottery system to pick artists
+    2. Mathematical similarity from database for each winner
+    3. Validation and deduplication
+    4. Returns list of added songs for display
+    
+    Args:
+        sp: Spotify client
+        output_playlist_id: Playlist to add tracks to
+        max_songs: Number of songs to add
+        lastfm_username: Optional Last.fm username for listening data
+        max_follower_count: Maximum artist follower count (None = no limit)
+    
+    Returns:
+        {
+            'success': bool,
+            'tracks_added': int,
+            'added_songs': [{title, artist, spotify_url, similarity_distance}],
+            'error': str (if failed)
+        }
+    """
+    try:
+        follower_desc = f"max {max_follower_count:,} followers" if max_follower_count else "no follower limit"
+        print(f"[INFO] Starting enhanced recommendation run for playlist {output_playlist_id} ({follower_desc})")
+        
+        # Connect to database
+        conn = get_db_connection()
+        if not conn:
+            return {
+                "success": False,
+                "error": "Could not connect to audio features database",
+                "tracks_added": 0,
+                "added_songs": []
+            }
+        
+        # Get listening data for lottery weights
+        artist_play_map = {}
+        if lastfm_username and LASTFM_API_KEY:
+            print("[INFO] Fetching Last.fm recent tracks...")
+            recent_tracks = fetch_all_recent_tracks(lastfm_username, LASTFM_API_KEY)
+            artist_play_map = build_artist_play_map(recent_tracks)
+            print(f"[INFO] Found {len(recent_tracks)} recent tracks, {len(artist_play_map)} unique artists from Last.fm")
+        else:
+            print("[INFO] No Last.fm username provided. Using Spotify listening data...")
+            artist_play_map = fetch_spotify_listening_data(sp)
+        
+        # Build fresh artist list from current liked songs
+        print("[INFO] Scanning liked songs to build artist list...")
+        artists_data = build_artist_list_from_liked_songs(sp, artist_play_map)
+        
+        if not artists_data:
+            print("[ERROR] No artists found in liked songs!")
+            conn.close()
+            return {
+                "success": False,
+                "error": "No artists found in your liked songs. Please add some liked songs first.",
+                "tracks_added": 0,
+                "added_songs": []
+            }
+        
+        # Fetch liked songs artist IDs and track IDs for exclusion
+        liked_songs_artist_ids = set(artists_data.keys())
+        liked_track_ids = set()
+        print(f"[INFO] Fetching liked track IDs for exclusion...")
+        offset = 0
+        while True:
+            results = safe_spotify_call(sp.current_user_saved_tracks, limit=50, offset=offset)
+            if not results or not results.get("items"):
+                break
+            for item in results["items"]:
+                track = item.get("track")
+                if track and track.get("id"):
+                    liked_track_ids.add(track["id"])
+            if len(results["items"]) < 50:
+                break
+            offset += 50
+        print(f"[INFO] Will exclude {len(liked_songs_artist_ids)} artists and {len(liked_track_ids)} tracks from liked songs")
+        
+        # Get current playlist tracks to avoid duplicates
+        playlist_items = []
+        playlist_track_ids = set()
+        offset = 0
+        while True:
+            items = safe_spotify_call(sp.playlist_items, output_playlist_id, offset=offset, limit=100)
+            if not items or not items.get("items"):
+                break
+            playlist_items.extend(items["items"])
+            for item in items["items"]:
+                track = item.get("track")
+                if track and track.get("id"):
+                    playlist_track_ids.add(track["id"])
+            if len(items["items"]) < 100:
+                break
+            offset += 100
+        
+        existing_artist_ids = build_existing_artist_ids(playlist_items)
+        print(f"[INFO] Found {len(existing_artist_ids)} existing artists in target playlist")
+        
+        # Build weight lists for weighted lottery selection
+        artist_ids = list(artists_data.keys())
+        artist_weights = [artists_data[aid]["weight"] for aid in artist_ids]
+        
+        # Pick lottery winners (artists to use as seeds)
+        num_winners = max_songs
+        rolled_artist_ids = set()
+        lottery_winners = []
+        
+        print(f"\n[LOTTERY] Drawing {num_winners} lottery winners from {len(artist_ids)} artists...")
+        for i in range(num_winners * 3):  # Try up to 3x to get enough unique winners
+            if len(lottery_winners) >= num_winners:
+                break
+            
+            available_artists = [aid for aid in artist_ids if aid not in rolled_artist_ids]
+            if not available_artists:
+                break
+            
+            available_weights = [artist_weights[artist_ids.index(aid)] for aid in available_artists]
+            selected_aid = random.choices(available_artists, weights=available_weights, k=1)[0]
+            rolled_artist_ids.add(selected_aid)
+            
+            artist_info = artists_data[selected_aid]
+            artist_name = artist_info.get("name", "")
+            print(f"[LOTTERY] Winner {len(lottery_winners)+1}/{num_winners}: '{artist_name}' (liked {artist_info['total_liked']} songs)")
+            lottery_winners.append((selected_aid, artist_name, artist_info))
+        
+        print(f"\n[INFO] Selected {len(lottery_winners)} lottery winners")
+        
+        # For each lottery winner, find similar songs using mathematical similarity
+        selected_tracks = []
+        added_songs = []  # Track details for frontend display
+        seen_artist_ids = set(existing_artist_ids)
+        all_excluded_track_ids = liked_track_ids | playlist_track_ids
+        
+        for idx, (winner_aid, winner_name, winner_info) in enumerate(lottery_winners):
+            if len(selected_tracks) >= max_songs:
+                break
+            
+            print(f"\n[SIMILARITY {idx+1}/{len(lottery_winners)}] Finding similar songs for lottery winner: '{winner_name}'")
+            
+            # Get a seed track from this artist (from user's liked songs)
+            seed_track_id = None
+            try:
+                offset = 0
+                while True:
+                    results = safe_spotify_call(sp.current_user_saved_tracks, limit=50, offset=offset)
+                    if not results or not results.get("items"):
+                        break
+                    for item in results["items"]:
+                        track = item.get("track")
+                        if track and track.get("id"):
+                            track_artist_ids = {a["id"] for a in track["artists"]}
+                            if winner_aid in track_artist_ids:
+                                seed_track_id = track["id"]
+                                print(f"[INFO] Using seed track: {track['name']} by {winner_name}")
+                                break
+                    if seed_track_id:
+                        break
+                    if len(results["items"]) < 50:
+                        break
+                    offset += 50
+            except Exception as e:
+                print(f"[WARN] Error finding seed track: {e}")
+            
+            if not seed_track_id:
+                print(f"[WARN] Could not find seed track for {winner_name}, skipping")
+                continue
+            
+            # Ensure seed track is in database (Railway-friendly auto-processing)
+            print(f"[INFO] Checking if seed track is in database...")
+            if not ensure_track_in_db(sp, conn, seed_track_id):
+                print(f"[WARN] Could not process seed track {seed_track_id}, skipping {winner_name}")
+                continue
+            
+            # Get audio features for seed track from database
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """SELECT tempo_bpm, key_musical, beat_regularity, brightness_hz, treble_hz, 
+                           fullness_hz, dynamic_range, percussiveness, loudness, warmth, punch, texture, 
+                           energy, danceability, mood_positive, acousticness, instrumental 
+                           FROM audio_features WHERE spotify_track_id = %s""",
+                        (seed_track_id,)
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        # This should not happen since we just ensured it's in the DB
+                        print(f"[ERROR] Seed track {seed_track_id} still not in database after processing!")
+                        continue
+                    
+                    features = {
+                        'tempo': row[0], 'key_estimate': row[1], 'beat_strength': row[2],
+                        'spectral_centroid': row[3], 'spectral_rolloff': row[4], 'spectral_bandwidth': row[5],
+                        'spectral_contrast': row[6], 'zero_crossing_rate': row[7], 'rms_energy': row[8],
+                        'harmonic_mean': row[9], 'percussive_mean': row[10], 'mfcc_mean': row[11],
+                        'energy': row[12], 'danceability': row[13], 'valence': row[14],
+                        'acousticness': row[15], 'instrumentalness': row[16]
+                    }
+            except Exception as e:
+                print(f"[ERROR] Database error: {e}")
+                continue
+            
+            # Find similar tracks from database
+            similar_tracks = find_most_similar_track_in_db(
+                conn, 
+                features, 
+                liked_track_ids=list(all_excluded_track_ids), 
+                max_results=20  # Get multiple candidates
+            )
+            
+            if not similar_tracks:
+                print(f"[WARN] No similar tracks found in database for {winner_name}")
+                continue
+            
+            # Validate and select the best candidate
+            for candidate in similar_tracks:
+                candidate_id = candidate['id']
+                
+                # Skip if already checked
+                if candidate_id in all_excluded_track_ids:
+                    continue
+                
+                # Fetch full track info
+                candidate_track = safe_spotify_call(sp.track, candidate_id)
+                if not candidate_track:
+                    continue
+                
+                candidate_artist_ids = {a['id'] for a in candidate_track['artists']}
+                
+                # Validation checks
+                # 1. Not from seed artist
+                if winner_aid in candidate_artist_ids:
+                    continue
+                
+                # 2. Not from liked songs artists
+                if candidate_artist_ids & liked_songs_artist_ids:
+                    continue
+                
+                # 3. Not already in playlist (artist)
+                if candidate_artist_ids & seen_artist_ids:
+                    continue
+                
+                # 4. Check follower count
+                if max_follower_count is not None:
+                    main_artist_id = candidate_track['artists'][0]['id']
+                    main_artist_profile = safe_spotify_call(sp.artist, main_artist_id)
+                    if main_artist_profile and 'followers' in main_artist_profile:
+                        follower_count = main_artist_profile['followers'].get('total', 0)
+                        if follower_count > max_follower_count:
+                            continue
+                
+                # Valid candidate found!
+                selected_tracks.append(candidate_track)
+                all_excluded_track_ids.add(candidate_id)
+                seen_artist_ids.update(candidate_artist_ids)
+                
+                # Add to display list
+                added_songs.append({
+                    'title': candidate_track['name'],
+                    'artist': ', '.join([a['name'] for a in candidate_track['artists']]),
+                    'spotify_url': candidate_track['external_urls']['spotify'],
+                    'similarity_distance': round(candidate['similarity_distance'], 4)
+                })
+                
+                print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (distance: {candidate['similarity_distance']:.4f})")
+                break
+        
+        conn.close()
+        
+        # Add all selected tracks to playlist
+        if selected_tracks:
+            print(f"\n[INFO] Adding {len(selected_tracks)} tracks to playlist...")
+            track_uris = [track["uri"] for track in selected_tracks]
+            try:
+                result = safe_spotify_call(sp.playlist_add_items, output_playlist_id, track_uris)
+                if result:
+                    print(f"[SUCCESS] Added {len(selected_tracks)} new tracks to playlist")
+                else:
+                    print("[ERROR] Failed to add tracks to playlist")
+            except Exception as e:
+                print(f"[ERROR] Error adding tracks to playlist: {e}")
+        else:
+            print("[WARNING] No tracks were selected")
+        
+        return {
+            "success": True,
+            "tracks_added": len(selected_tracks),
+            "added_songs": added_songs,
+            "playlist_id": output_playlist_id
+        }
+        
+    except Exception as e:
+        print(f"[FATAL ERROR] Enhanced recommendation script failed: {e}")
+        import traceback
+        traceback.print_exc()
+        if 'conn' in locals() and conn:
+            conn.close()
+        return {
+            "success": False,
+            "error": str(e),
+            "tracks_added": 0,
+            "added_songs": []
         }
 
 # For testing purposes

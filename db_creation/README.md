@@ -213,16 +213,57 @@ When `--extensive` is enabled:
 
 ---
 
+
 ### `build_audio_features_from_spotify.py`
 
-**Purpose:** Original script to process Spotify tracks directly (legacy).
+**Purpose:** Process Spotify liked songs, playlists, or individual tracks directly (legacy, now supports playlist/track links).
 
 **Usage:**
 ```bash
+# Process liked songs (default)
 python3 build_audio_features_from_spotify.py [OPTIONS]
+
+# Process a specific Spotify playlist
+python3 build_audio_features_from_spotify.py --playlist <PLAYLIST_ID_OR_URL> [OPTIONS]
+
+# Process a specific Spotify track
+python3 build_audio_features_from_spotify.py --track <TRACK_ID_OR_URL> [OPTIONS]
 ```
 
-**Note:** This is the original implementation. Consider using the newer scripts above for more features.
+**Arguments:**
+| Argument    | Required | Description |
+|-------------|----------|-------------|
+| `--playlist`| No       | Spotify playlist ID or URL to process |
+| `--track`   | No       | Spotify track ID or URL to process |
+
+**Flags:**
+| Flag        | Type     | Default | Description |
+|-------------|----------|---------|-------------|
+| `--tracks`  | int      | 100     | Number of liked songs or playlist tracks to process (0 = all) |
+| `--threads` | int      | 9       | Number of parallel threads |
+| `--overwrite`| flag    | False   | Overwrite existing tracks in database |
+
+**Examples:**
+```bash
+# Process all liked songs (default)
+python3 build_audio_features_from_spotify.py --threads 10
+
+# Process a specific playlist
+python3 build_audio_features_from_spotify.py --playlist "https://open.spotify.com/playlist/3F4grcxHB3p1t1yvTPDXUD" --threads 2
+
+# Process a specific track
+python3 build_audio_features_from_spotify.py --track "https://open.spotify.com/track/TRACK_ID" --threads 2
+
+# Limit to first 10 tracks in playlist
+python3 build_audio_features_from_spotify.py --playlist "PLAYLIST_ID" --tracks 10 --threads 4
+```
+
+**Supported Spotify URL Formats:**
+- Playlist: `https://open.spotify.com/playlist/PLAYLIST_ID`
+- Track: `https://open.spotify.com/track/TRACK_ID`
+- Plain IDs also supported
+
+**Note:** This script now supports direct playlist and track processing. For user/artist workflows, use the newer scripts above for more features.
 
 ---
 
