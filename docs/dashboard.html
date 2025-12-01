@@ -55,6 +55,7 @@
                             <option value="liked_songs">Based on Liked Songs</option>
                             <option value="track">Based on Single Track</option>
                             <option value="artist">Based on Artist</option>
+                            <option value="album">Based on Album</option>
                             <option value="playlist">Based on Playlist</option>
                         </select>
                     </div>
@@ -73,7 +74,7 @@
                         <input type="number" id="maxSongs" class="input" min="1" max="50" value="10">
                     </div>
 
-                    <div class="form-group">
+                    <div class="form-group" id="minLikedSongsGroup">
                         <label for="minLikedSongs">Minimum Liked Songs per Artist: <span
                                 id="minLikedSongsText">3</span></label>
                         <input type="range" id="minLikedSongs" min="1" max="20" value="3"
@@ -250,10 +251,14 @@
         function toggleSourceUrlInput() {
             const mode = document.getElementById('generationMode').value;
             const urlGroup = document.getElementById('sourceUrlGroup');
+            const minLikedSongsGroup = document.getElementById('minLikedSongsGroup');
+
             if (mode === 'liked_songs') {
                 urlGroup.classList.add('hidden');
+                minLikedSongsGroup.classList.remove('hidden');
             } else {
                 urlGroup.classList.remove('hidden');
+                minLikedSongsGroup.classList.add('hidden');
             }
         }
 
@@ -437,8 +442,16 @@
                 const job = await response.json();
 
                 if (job.status === 'running') {
-                    document.getElementById('statusMessage').textContent = 'Analyzing your music taste and finding new tracks...';
-                    document.getElementById('progressFill').style.width = '60%';
+                    // Update status message dynamically
+                    let statusMsg = job.status_message || 'Analyzing your music taste and finding new tracks...';
+                    document.getElementById('statusMessage').textContent = statusMsg;
+
+                    // Calculate dynamic progress based on tracks processed
+                    let progressPercent = 60; // Default
+                    if (job.progress) {
+                        progressPercent = Math.min(95, 10 + (job.progress * 85)); // 10% start, up to 95%
+                    }
+                    document.getElementById('progressFill').style.width = `${progressPercent}%`;
                 } else if (job.status === 'completed') {
                     clearInterval(statusCheckInterval);
                     statusCheckInterval = null;

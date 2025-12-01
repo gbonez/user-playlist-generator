@@ -357,7 +357,9 @@ def run_script():
             'user_id': current_user['id'],
             'started_at': time.time(),
             'result': None,
-            'error': None
+            'error': None,
+            'progress': 0,
+            'status_message': 'Initializing...'
         }
         
         # Start script in background thread
@@ -399,7 +401,9 @@ def run_script():
                     max_follower_count=max_follower_count,
                     min_liked_songs=min_liked_songs,
                     generation_mode=generation_mode,
-                    source_url=source_url if source_url else None
+                    source_url=source_url if source_url else None,
+                    job_id=job_id,
+                    running_jobs=running_jobs
                 )
                 
                 running_jobs[job_id]['result'] = result

@@ -50,12 +50,13 @@ def parse_spotify_url(url):
         url: Spotify URL (e.g., https://open.spotify.com/track/xxx?si=yyy)
     
     Returns:
-        tuple: (type, id) where type is 'track', 'artist', 'playlist', or 'user'
+        tuple: (type, id) where type is 'track', 'artist', 'album', 'playlist', or 'user'
                Returns (None, None) if invalid
     
     Examples:
         https://open.spotify.com/track/7fVvUY3EOoqc8lEwUamIMO?si=xxx -> ('track', '7fVvUY3EOoqc8lEwUamIMO')
         https://open.spotify.com/artist/1cLXpQsVOMiqdZzlSsyy8u?si=xxx -> ('artist', '1cLXpQsVOMiqdZzlSsyy8u')
+        https://open.spotify.com/album/5Z9iiGl2FcIfa3BMiv6OIw?si=xxx -> ('album', '5Z9iiGl2FcIfa3BMiv6OIw')
         https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=xxx -> ('playlist', '37i9dQZF1DXcBWIGoYBM5M')
     """
     import re
@@ -64,13 +65,108 @@ def parse_spotify_url(url):
     url = url.split('?')[0]
     
     # Pattern: https://open.spotify.com/{type}/{id}
-    pattern = r'https://open\.spotify\.com/(track|artist|playlist|user)/([a-zA-Z0-9]+)'
+    pattern = r'https://open\.spotify\.com/(track|artist|album|playlist|user)/([a-zA-Z0-9]+)'
     match = re.match(pattern, url)
     
     if match:
         return match.group(1), match.group(2)
     
     return None, None
+
+def fetch_tracks_from_source(sp, generation_mode, source_url):
+    """
+    Fetch tracks from different sources based on generation mode
+    
+    Args:
+        sp: Spotify client
+        generation_mode: 'track', 'artist', 'album', or 'playlist'
+        source_url: Spotify URL to fetch from
+    
+    Returns:
+        tuple: (list of track_ids, source_description)
+               source_description is a string describing the source for logging
+    """
+    url_type, url_id = parse_spotify_url(source_url)
+    
+    if not url_type or not url_id:
+        raise ValueError(f"Invalid Spotify URL: {source_url}")
+    
+    if generation_mode == 'track':
+        # Single track mode
+        track = safe_spotify_call(sp.track, url_id)
+        if not track:
+            raise ValueError(f"Could not fetch track: {url_id}")
+        source_desc = f"track '{track['name']}' by {track['artists'][0]['name']}"
+        return [track['id']], source_desc
+    
+    elif generation_mode == 'artist':
+        # Artist mode - get all tracks from artist's top tracks and albums
+        artist = safe_spotify_call(sp.artist, url_id)
+        if not artist:
+            raise ValueError(f"Could not fetch artist: {url_id}")
+        
+        source_desc = f"artist '{artist['name']}'"
+        track_ids = []
+        
+        # Get top tracks
+        top_tracks = safe_spotify_call(sp.artist_top_tracks, url_id, country='US')
+        if top_tracks and 'tracks' in top_tracks:
+            track_ids.extend([t['id'] for t in top_tracks['tracks'] if t.get('id')])
+        
+        # Get albums and their tracks
+        albums = safe_spotify_call(sp.artist_albums, url_id, limit=50, album_type='album,single')
+        if albums and 'items' in albums:
+            for album in albums['items'][:10]:  # Limit to 10 albums
+                album_tracks = safe_spotify_call(sp.album_tracks, album['id'])
+                if album_tracks and 'items' in album_tracks:
+                    track_ids.extend([t['id'] for t in album_tracks['items'] if t.get('id')])
+        
+        return track_ids, source_desc
+    
+    elif generation_mode == 'album':
+        # Album mode - get all tracks from album
+        album = safe_spotify_call(sp.album, url_id)
+        if not album:
+            raise ValueError(f"Could not fetch album: {url_id}")
+        
+        source_desc = f"album '{album['name']}' by {album['artists'][0]['name']}"
+        track_ids = []
+        
+        album_tracks = safe_spotify_call(sp.album_tracks, url_id)
+        if album_tracks and 'items' in album_tracks:
+            track_ids.extend([t['id'] for t in album_tracks['items'] if t.get('id')])
+        
+        return track_ids, source_desc
+    
+    elif generation_mode == 'playlist':
+        # Playlist mode - get all tracks from playlist
+        playlist = safe_spotify_call(sp.playlist, url_id)
+        if not playlist:
+            raise ValueError(f"Could not fetch playlist: {url_id}")
+        
+        source_desc = f"playlist '{playlist['name']}' by {playlist['owner']['display_name']}"
+        track_ids = []
+        
+        # Fetch all tracks from playlist (handle pagination)
+        offset = 0
+        while True:
+            results = safe_spotify_call(sp.playlist_items, url_id, offset=offset, limit=100)
+            if not results or not results.get('items'):
+                break
+            
+            for item in results['items']:
+                track = item.get('track')
+                if track and track.get('id'):
+                    track_ids.append(track['id'])
+            
+            if len(results['items']) < 100:
+                break
+            offset += 100
+        
+        return track_ids, source_desc
+    
+    else:
+        raise ValueError(f"Unsupported generation mode: {generation_mode}")
 
 # Fallback stub for Spotify similarity if audio features are unavailable
 def get_similar_tracks_by_audio_features_spotify_fallback(sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids=None, max_follower_count=None):
@@ -1557,7 +1653,7 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, 
             "tracks_removed": 0
         }
 
-def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None, min_liked_songs=3, generation_mode='liked_songs', source_url=None):
+def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None, min_liked_songs=3, generation_mode='liked_songs', source_url=None, job_id=None, running_jobs=None):
     """
     Enhanced recommendation script using:
     1. Existing lottery system to pick artists (or custom source)
@@ -1583,6 +1679,13 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
             'error': str (if failed)
         }
     """
+    def update_progress(progress, status_message):
+        """Helper to update job progress and status message"""
+        if job_id and running_jobs is not None:
+            running_jobs[job_id]['progress'] = progress
+            running_jobs[job_id]['status_message'] = status_message
+            print(f"[PROGRESS] {progress:.1f}% - {status_message}")
+    
     try:
         follower_desc = f"max {max_follower_count:,} followers" if max_follower_count else "no follower limit"
         print(f"[INFO] Starting enhanced recommendation run for playlist {output_playlist_id} ({follower_desc})")
@@ -1597,33 +1700,85 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 "added_songs": []
             }
         
-        # Get listening data for lottery weights
-        artist_play_map = {}
-        if lastfm_username and LASTFM_API_KEY:
-            print("[INFO] Fetching Last.fm recent tracks...")
-            recent_tracks = fetch_all_recent_tracks(lastfm_username, LASTFM_API_KEY)
-            artist_play_map = build_artist_play_map(recent_tracks)
-            print(f"[INFO] Found {len(recent_tracks)} recent tracks, {len(artist_play_map)} unique artists from Last.fm")
+        # Handle different generation modes
+        seed_track_ids = []
+        source_description = ""
+        
+        if generation_mode == 'liked_songs':
+            # Original mode: lottery from liked songs
+            print(f"[MODE] Running in LIKED SONGS mode")
+            update_progress(10, "Analyzing your liked songs...")
+            
+            # Get listening data for lottery weights
+            artist_play_map = {}
+            if lastfm_username and LASTFM_API_KEY:
+                print("[INFO] Fetching Last.fm recent tracks...")
+                recent_tracks = fetch_all_recent_tracks(lastfm_username, LASTFM_API_KEY)
+                artist_play_map = build_artist_play_map(recent_tracks)
+                print(f"[INFO] Found {len(recent_tracks)} recent tracks, {len(artist_play_map)} unique artists from Last.fm")
+            else:
+                print("[INFO] No Last.fm username provided. Using Spotify listening data...")
+                artist_play_map = fetch_spotify_listening_data(sp)
+            
+            # Build fresh artist list from current liked songs (with minimum filter)
+            print("[INFO] Scanning liked songs to build artist list...")
+            update_progress(20, "Building artist list from your library...")
+            artists_data = build_artist_list_from_liked_songs(sp, artist_play_map, min_liked_songs)
+            
+            if not artists_data:
+                print("[ERROR] No artists found in liked songs!")
+                conn.close()
+                return {
+                    "success": False,
+                    "error": f"No artists found with at least {min_liked_songs} liked songs. Try lowering the minimum liked songs filter.",
+                    "tracks_added": 0,
+                    "added_songs": []
+                }
+            
+            source_description = "liked songs"
+            
         else:
-            print("[INFO] No Last.fm username provided. Using Spotify listening data...")
-            artist_play_map = fetch_spotify_listening_data(sp)
+            # Alternative modes: track, artist, album, playlist
+            if not source_url:
+                conn.close()
+                return {
+                    "success": False,
+                    "error": f"Source URL is required for {generation_mode} mode",
+                    "tracks_added": 0,
+                    "added_songs": []
+                }
+            
+            try:
+                update_progress(10, f"Fetching {generation_mode} data from Spotify...")
+                seed_track_ids, source_description = fetch_tracks_from_source(sp, generation_mode, source_url)
+                print(f"[MODE] Running in {generation_mode.upper()} mode")
+                print(f"[INFO] Discovering recommendations based on {source_description}")
+                print(f"[INFO] Found {len(seed_track_ids)} seed tracks from source")
+                update_progress(25, f"Found {len(seed_track_ids)} tracks from {source_description}")
+                
+                if not seed_track_ids:
+                    conn.close()
+                    return {
+                        "success": False,
+                        "error": f"No tracks found from {source_description}",
+                        "tracks_added": 0,
+                        "added_songs": []
+                    }
+                
+                # For alternative modes, we don't need liked songs data
+                artists_data = None
+                
+            except Exception as e:
+                conn.close()
+                return {
+                    "success": False,
+                    "error": f"Failed to fetch tracks from source: {str(e)}",
+                    "tracks_added": 0,
+                    "added_songs": []
+                }
         
-        # Build fresh artist list from current liked songs (with minimum filter)
-        print("[INFO] Scanning liked songs to build artist list...")
-        artists_data = build_artist_list_from_liked_songs(sp, artist_play_map, min_liked_songs)
-        
-        if not artists_data:
-            print("[ERROR] No artists found in liked songs!")
-            conn.close()
-            return {
-                "success": False,
-                "error": f"No artists found with at least {min_liked_songs} liked songs. Try lowering the minimum liked songs filter.",
-                "tracks_added": 0,
-                "added_songs": []
-            }
-        
-        # Fetch liked songs artist IDs and track IDs for exclusion
-        liked_songs_artist_ids = set(artists_data.keys())
+        # Fetch liked songs for exclusion (always do this to avoid recommending already-liked tracks)
+        liked_songs_artist_ids = set()
         liked_track_ids = set()
         print(f"[INFO] Fetching liked track IDs for exclusion...")
         offset = 0
@@ -1635,6 +1790,9 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 track = item.get("track")
                 if track and track.get("id"):
                     liked_track_ids.add(track["id"])
+                    for artist in track.get("artists", []):
+                        if artist.get("id"):
+                            liked_songs_artist_ids.add(artist["id"])
             if len(results["items"]) < 50:
                 break
             offset += 50
@@ -1660,77 +1818,102 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         existing_artist_ids = build_existing_artist_ids(playlist_items)
         print(f"[INFO] Found {len(existing_artist_ids)} existing artists in target playlist")
         
-        # Build weight lists for weighted lottery selection
-        artist_ids = list(artists_data.keys())
-        artist_weights = [artists_data[aid]["weight"] for aid in artist_ids]
-        
-        # Pick lottery winners (artists to use as seeds)
-        num_winners = max_songs
-        rolled_artist_ids = set()
-        lottery_winners = []
-        
-        print(f"\n[LOTTERY] Drawing {num_winners} lottery winners from {len(artist_ids)} artists...")
-        for i in range(num_winners * 3):  # Try up to 3x to get enough unique winners
-            if len(lottery_winners) >= num_winners:
-                break
+        # Prepare seed selection based on mode
+        if generation_mode == 'liked_songs':
+            # Build weight lists for weighted lottery selection
+            artist_ids = list(artists_data.keys())
+            artist_weights = [artists_data[aid]["weight"] for aid in artist_ids]
             
-            available_artists = [aid for aid in artist_ids if aid not in rolled_artist_ids]
-            if not available_artists:
-                break
+            # Pick lottery winners (artists to use as seeds)
+            num_winners = max_songs
+            rolled_artist_ids = set()
+            lottery_winners = []
             
-            available_weights = [artist_weights[artist_ids.index(aid)] for aid in available_artists]
-            selected_aid = random.choices(available_artists, weights=available_weights, k=1)[0]
-            rolled_artist_ids.add(selected_aid)
+            print(f"\n[LOTTERY] Drawing {num_winners} lottery winners from {len(artist_ids)} artists...")
+            for i in range(num_winners * 3):  # Try up to 3x to get enough unique winners
+                if len(lottery_winners) >= num_winners:
+                    break
+                
+                available_artists = [aid for aid in artist_ids if aid not in rolled_artist_ids]
+                if not available_artists:
+                    break
+                
+                available_weights = [artist_weights[artist_ids.index(aid)] for aid in available_artists]
+                selected_aid = random.choices(available_artists, weights=available_weights, k=1)[0]
+                rolled_artist_ids.add(selected_aid)
+                
+                artist_info = artists_data[selected_aid]
+                artist_name = artist_info.get("name", "")
+                print(f"[LOTTERY] Winner {len(lottery_winners)+1}/{num_winners}: '{artist_name}' (liked {artist_info['total_liked']} songs)")
+                lottery_winners.append((selected_aid, artist_name, artist_info))
             
-            artist_info = artists_data[selected_aid]
-            artist_name = artist_info.get("name", "")
-            print(f"[LOTTERY] Winner {len(lottery_winners)+1}/{num_winners}: '{artist_name}' (liked {artist_info['total_liked']} songs)")
-            lottery_winners.append((selected_aid, artist_name, artist_info))
+            print(f"\n[INFO] Selected {len(lottery_winners)} lottery winners")
+        else:
+            # For alternative modes: randomly select from seed_track_ids
+            # If more songs requested than available, allow reusing tracks
+            lottery_winners = []
+            print(f"\n[SEED SELECTION] Randomly selecting {max_songs} seed tracks from {len(seed_track_ids)} available tracks")
+            
+            for i in range(max_songs):
+                # Randomly pick a track (allow repeats if needed)
+                selected_track_id = random.choice(seed_track_ids)
+                lottery_winners.append(selected_track_id)
+                print(f"[SEED] Selection {i+1}/{max_songs}: Track ID {selected_track_id}")
         
-        print(f"\n[INFO] Selected {len(lottery_winners)} lottery winners")
-        
-        # For each lottery winner, find similar songs using mathematical similarity
+        # For each seed, find similar songs using mathematical similarity
         selected_tracks = []
         added_songs = []  # Track details for frontend display
         seen_artist_ids = set(existing_artist_ids)
         all_excluded_track_ids = liked_track_ids | playlist_track_ids
         
-        for idx, (winner_aid, winner_name, winner_info) in enumerate(lottery_winners):
+        for idx, winner in enumerate(lottery_winners):
             if len(selected_tracks) >= max_songs:
                 break
             
-            print(f"\n[SIMILARITY {idx+1}/{len(lottery_winners)}] Finding similar songs for lottery winner: '{winner_name}'")
+            # Update progress (30% to 90% during track discovery)
+            current_progress = 30 + (60 * idx / len(lottery_winners))
             
-            # Get a seed track from this artist (from user's liked songs)
-            seed_track_id = None
-            try:
-                offset = 0
-                while True:
-                    results = safe_spotify_call(sp.current_user_saved_tracks, limit=50, offset=offset)
-                    if not results or not results.get("items"):
-                        break
-                    for item in results["items"]:
-                        track = item.get("track")
-                        if track and track.get("id"):
-                            track_artist_ids = {a["id"] for a in track["artists"]}
-                            if winner_aid in track_artist_ids:
-                                seed_track_id = track["id"]
-                                print(f"[INFO] Using seed track: {track['name']} by {winner_name}")
-                                break
-                    if seed_track_id:
-                        break
-                    if len(results["items"]) < 50:
-                        break
-                    offset += 50
-            except Exception as e:
-                print(f"[WARN] Error finding seed track: {e}")
-            
-            if not seed_track_id:
-                print(f"[WARN] Could not find seed track for {winner_name}, skipping")
-                continue
+            # Handle different winner formats
+            if generation_mode == 'liked_songs':
+                winner_aid, winner_name, winner_info = winner
+                print(f"\n[SIMILARITY {idx+1}/{len(lottery_winners)}] Finding similar songs for lottery winner: '{winner_name}'")
+                update_progress(current_progress, f"Discovering songs similar to {winner_name}...")
+                
+                # Get a seed track from this artist (from user's liked songs)
+                seed_track_id = None
+                try:
+                    offset = 0
+                    while True:
+                        results = safe_spotify_call(sp.current_user_saved_tracks, limit=50, offset=offset)
+                        if not results or not results.get("items"):
+                            break
+                        for item in results["items"]:
+                            track = item.get("track")
+                            if track and track.get("id"):
+                                track_artist_ids = {a["id"] for a in track["artists"]}
+                                if winner_aid in track_artist_ids:
+                                    seed_track_id = track["id"]
+                                    print(f"[INFO] Using seed track: {track['name']} by {winner_name}")
+                                    break
+                        if seed_track_id:
+                            break
+                        if len(results["items"]) < 50:
+                            break
+                        offset += 50
+                except Exception as e:
+                    print(f"[WARN] Error finding seed track: {e}")
+                
+                if not seed_track_id:
+                    print(f"[WARN] Could not find seed track for {winner_name}, skipping")
+                    continue
+            else:
+                # Alternative modes: winner IS the seed track ID
+                seed_track_id = winner
+                print(f"\n[SIMILARITY {idx+1}/{len(lottery_winners)}] Finding similar songs for seed track: {seed_track_id}")
+                update_progress(current_progress, f"Discovering songs from {source_description} ({idx+1}/{len(lottery_winners)})...")
             
             # Ensure seed track is in database (Railway-friendly auto-processing)
-            # Retry up to 5 times with different tracks from the same artist if processing fails
+            # Retry up to 5 times with different tracks if processing fails
             print(f"[INFO] Checking if seed track is in database...")
             seed_processed = False
             retry_count = 0
@@ -1745,40 +1928,67 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                     print(f"[WARN] Failed to process seed track {seed_track_id} (attempt {retry_count}/{max_retries})")
                     
                     if retry_count < max_retries:
-                        # Try to find another track from the same artist
-                        print(f"[INFO] Looking for another seed track from {winner_name}...")
-                        old_seed = seed_track_id
-                        seed_track_id = None
-                        
-                        try:
-                            offset = 0
-                            while True:
-                                results = safe_spotify_call(sp.current_user_saved_tracks, limit=50, offset=offset)
-                                if not results or not results.get("items"):
-                                    break
-                                for item in results["items"]:
-                                    track = item.get("track")
-                                    if track and track.get("id") and track["id"] != old_seed:
-                                        track_artist_ids = {a["id"] for a in track["artists"]}
-                                        if winner_aid in track_artist_ids:
-                                            seed_track_id = track["id"]
-                                            print(f"[INFO] Trying alternative seed: {track['name']} by {winner_name}")
-                                            break
-                                if seed_track_id:
-                                    break
-                                if len(results["items"]) < 50:
-                                    break
-                                offset += 50
-                        except Exception as e:
-                            print(f"[WARN] Error finding alternative seed track: {e}")
-                        
-                        if not seed_track_id:
-                            print(f"[WARN] No more alternative tracks available for {winner_name}")
-                            break
+                        if generation_mode == 'liked_songs':
+                            # Try to find another track from the same artist
+                            print(f"[INFO] Looking for another seed track from {winner_name}...")
+                            old_seed = seed_track_id
+                            seed_track_id = None
+                            
+                            try:
+                                offset = 0
+                                while True:
+                                    results = safe_spotify_call(sp.current_user_saved_tracks, limit=50, offset=offset)
+                                    if not results or not results.get("items"):
+                                        break
+                                    for item in results["items"]:
+                                        track = item.get("track")
+                                        if track and track.get("id") and track["id"] != old_seed:
+                                            track_artist_ids = {a["id"] for a in track["artists"]}
+                                            if winner_aid in track_artist_ids:
+                                                seed_track_id = track["id"]
+                                                print(f"[INFO] Trying alternative seed: {track['name']} by {winner_name}")
+                                                break
+                                    if seed_track_id:
+                                        break
+                                    if len(results["items"]) < 50:
+                                        break
+                                    offset += 50
+                            except Exception as e:
+                                print(f"[WARN] Error finding alternative seed track: {e}")
+                            
+                            if not seed_track_id:
+                                print(f"[WARN] No more alternative tracks available for {winner_name}")
+                                break
+                        else:
+                            # Alternative modes: just pick another random track from seed pool
+                            print(f"[INFO] Selecting a different random seed track from source...")
+                            old_seed = seed_track_id
+                            available_seeds = [tid for tid in seed_track_ids if tid != old_seed]
+                            if available_seeds:
+                                seed_track_id = random.choice(available_seeds)
+                                print(f"[INFO] Trying alternative seed: {seed_track_id}")
+                            else:
+                                print(f"[WARN] No more alternative tracks available")
+                                break
             
             if not seed_processed:
-                print(f"[WARN] Failed to process any seed track for {winner_name} after {max_retries} attempts, re-rolling lottery")
+                if generation_mode == 'liked_songs':
+                    print(f"[WARN] Failed to process any seed track for {winner_name} after {max_retries} attempts, re-rolling lottery")
+                else:
+                    print(f"[WARN] Failed to process seed track after {max_retries} attempts, skipping")
                 continue
+            
+            # Get seed track name for display (for alternative modes)
+            if generation_mode != 'liked_songs':
+                try:
+                    seed_track_info = safe_spotify_call(sp.track, seed_track_id)
+                    if seed_track_info:
+                        winner_name = seed_track_info['artists'][0]['name']
+                    else:
+                        winner_name = "Unknown Artist"
+                except Exception as e:
+                    print(f"[WARN] Could not fetch seed track info: {e}")
+                    winner_name = "Unknown Artist"
             
             # Get audio features for seed track from database
             try:
@@ -1878,17 +2088,20 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         # Add all selected tracks to playlist
         if selected_tracks:
             print(f"\n[INFO] Adding {len(selected_tracks)} tracks to playlist...")
+            update_progress(90, f"Adding {len(selected_tracks)} tracks to your playlist...")
             track_uris = [track["uri"] for track in selected_tracks]
             try:
                 result = safe_spotify_call(sp.playlist_add_items, output_playlist_id, track_uris)
                 if result:
                     print(f"[SUCCESS] Added {len(selected_tracks)} new tracks to playlist")
+                    update_progress(100, f"Complete! Added {len(selected_tracks)} new tracks")
                 else:
                     print("[ERROR] Failed to add tracks to playlist")
             except Exception as e:
                 print(f"[ERROR] Error adding tracks to playlist: {e}")
         else:
             print("[WARNING] No tracks were selected")
+            update_progress(100, "Complete! No new tracks added")
         
         return {
             "success": True,
