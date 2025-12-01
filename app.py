@@ -498,6 +498,266 @@ def not_found(error):
 def internal_error(error):
     return render_template('error.html', error="Internal server error", code=500), 500
 
+# ==================== DATABASE MODIFIER API ROUTES ====================
+
+@app.route('/api/database/search')
+def search_database():
+    """Search audio_features database with extensive filters"""
+    try:
+        from lite_script import get_db_connection
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        # Get search parameters
+        track_name = request.args.get('track_name', '')
+        artist_name = request.args.get('artist_name', '')
+        spotify_id = request.args.get('spotify_id', '')
+        
+        # Range parameters
+        tempo_min = request.args.get('tempo_min', type=float)
+        tempo_max = request.args.get('tempo_max', type=float)
+        energy_min = request.args.get('energy_min', type=float)
+        energy_max = request.args.get('energy_max', type=float)
+        danceability_min = request.args.get('danceability_min', type=float)
+        danceability_max = request.args.get('danceability_max', type=float)
+        mood_min = request.args.get('mood_positive_min', type=float)
+        mood_max = request.args.get('mood_positive_max', type=float)
+        acousticness_min = request.args.get('acousticness_min', type=float)
+        acousticness_max = request.args.get('acousticness_max', type=float)
+        instrumental_min = request.args.get('instrumental_min', type=float)
+        instrumental_max = request.args.get('instrumental_max', type=float)
+        popularity_min = request.args.get('popularity_min', type=int)
+        popularity_max = request.args.get('popularity_max', type=int)
+        key = request.args.get('key', type=int)
+        
+        # Pagination
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 25, type=int)
+        offset = (page - 1) * per_page
+        
+        # Build WHERE clause
+        where_clauses = []
+        params = []
+        
+        if track_name:
+            where_clauses.append("track_name ILIKE %s")
+            params.append(f"%{track_name}%")
+        
+        if artist_name:
+            where_clauses.append("artist_name ILIKE %s")
+            params.append(f"%{artist_name}%")
+        
+        if spotify_id:
+            where_clauses.append("spotify_track_id ILIKE %s")
+            params.append(f"%{spotify_id}%")
+        
+        # Range filters
+        if tempo_min is not None:
+            where_clauses.append("tempo_bpm >= %s")
+            params.append(tempo_min)
+        if tempo_max is not None:
+            where_clauses.append("tempo_bpm <= %s")
+            params.append(tempo_max)
+        
+        if energy_min is not None:
+            where_clauses.append("energy >= %s")
+            params.append(energy_min)
+        if energy_max is not None:
+            where_clauses.append("energy <= %s")
+            params.append(energy_max)
+        
+        if danceability_min is not None:
+            where_clauses.append("danceability >= %s")
+            params.append(danceability_min)
+        if danceability_max is not None:
+            where_clauses.append("danceability <= %s")
+            params.append(danceability_max)
+        
+        if mood_min is not None:
+            where_clauses.append("mood_positive >= %s")
+            params.append(mood_min)
+        if mood_max is not None:
+            where_clauses.append("mood_positive <= %s")
+            params.append(mood_max)
+        
+        if acousticness_min is not None:
+            where_clauses.append("acousticness >= %s")
+            params.append(acousticness_min)
+        if acousticness_max is not None:
+            where_clauses.append("acousticness <= %s")
+            params.append(acousticness_max)
+        
+        if instrumental_min is not None:
+            where_clauses.append("instrumental >= %s")
+            params.append(instrumental_min)
+        if instrumental_max is not None:
+            where_clauses.append("instrumental <= %s")
+            params.append(instrumental_max)
+        
+        if popularity_min is not None:
+            where_clauses.append("popularity >= %s")
+            params.append(popularity_min)
+        if popularity_max is not None:
+            where_clauses.append("popularity <= %s")
+            params.append(popularity_max)
+        
+        if key is not None:
+            where_clauses.append("key_musical = %s")
+            params.append(key)
+        
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+        
+        # Get total count
+        count_query = f"SELECT COUNT(*) FROM audio_features WHERE {where_sql}"
+        
+        with conn.cursor() as cursor:
+            cursor.execute(count_query, params)
+            total_results = cursor.fetchone()[0]
+        
+        total_pages = (total_results + per_page - 1) // per_page
+        
+        # Get paginated results
+        query = f"""
+            SELECT id, spotify_track_id, artist_name, track_name, tempo_bpm, key_musical,
+                   energy, danceability, mood_positive, acousticness, instrumental,
+                   popularity, brightness_hz, loudness, created_at
+            FROM audio_features
+            WHERE {where_sql}
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+        """
+        
+        with conn.cursor() as cursor:
+            cursor.execute(query, params + [per_page, offset])
+            rows = cursor.fetchall()
+            
+            results = []
+            for row in rows:
+                results.append({
+                    'id': row[0],
+                    'spotify_track_id': row[1],
+                    'artist_name': row[2],
+                    'track_name': row[3],
+                    'tempo_bpm': float(row[4]) if row[4] else None,
+                    'key_musical': row[5],
+                    'energy': float(row[6]) if row[6] else None,
+                    'danceability': float(row[7]) if row[7] else None,
+                    'mood_positive': float(row[8]) if row[8] else None,
+                    'acousticness': float(row[9]) if row[9] else None,
+                    'instrumental': float(row[10]) if row[10] else None,
+                    'popularity': row[11],
+                    'brightness_hz': float(row[12]) if row[12] else None,
+                    'loudness': float(row[13]) if row[13] else None,
+                    'created_at': row[14].isoformat() if row[14] else None
+                })
+        
+        conn.close()
+        
+        return jsonify({
+            'results': results,
+            'total_results': total_results,
+            'total_pages': total_pages,
+            'current_page': page,
+            'per_page': per_page
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Database search failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/database/update/<int:track_id>', methods=['PUT'])
+def update_track(track_id):
+    """Update a track in the database"""
+    try:
+        from lite_script import get_db_connection
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        data = request.json
+        
+        # Build UPDATE statement
+        update_fields = []
+        params = []
+        
+        field_mapping = {
+            'track_name': 'track_name',
+            'artist_name': 'artist_name',
+            'tempo_bpm': 'tempo_bpm',
+            'key_musical': 'key_musical',
+            'energy': 'energy',
+            'danceability': 'danceability',
+            'mood_positive': 'mood_positive',
+            'acousticness': 'acousticness',
+            'instrumental': 'instrumental',
+            'popularity': 'popularity',
+            'brightness_hz': 'brightness_hz',
+            'loudness': 'loudness'
+        }
+        
+        for json_field, db_field in field_mapping.items():
+            if json_field in data:
+                update_fields.append(f"{db_field} = %s")
+                params.append(data[json_field])
+        
+        if not update_fields:
+            return jsonify({'error': 'No fields to update'}), 400
+        
+        params.append(track_id)
+        
+        update_query = f"""
+            UPDATE audio_features
+            SET {', '.join(update_fields)}
+            WHERE id = %s
+        """
+        
+        with conn.cursor() as cursor:
+            cursor.execute(update_query, params)
+            conn.commit()
+        
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'Track updated successfully'})
+        
+    except Exception as e:
+        print(f"[ERROR] Track update failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/database/delete/<int:track_id>', methods=['DELETE'])
+def delete_track(track_id):
+    """Delete a track from the database"""
+    try:
+        from lite_script import get_db_connection
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        delete_query = "DELETE FROM audio_features WHERE id = %s"
+        
+        with conn.cursor() as cursor:
+            cursor.execute(delete_query, (track_id,))
+            conn.commit()
+        
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'Track deleted successfully'})
+        
+    except Exception as e:
+        print(f"[ERROR] Track deletion failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+# ==================== END DATABASE MODIFIER API ROUTES ====================
+
 if __name__ == '__main__':
     # Check required environment variables
     if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:

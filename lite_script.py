@@ -2128,7 +2128,7 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 # Alternative modes: winner IS the seed track ID
                 seed_track_id = winner
                 print(f"\n[SIMILARITY {idx+1}/{max_songs}] Finding similar songs for seed track: {seed_track_id}")
-                update_progress(current_progress, f"Discovering songs from {source_description} ({idx+1}/{max_songs})...")
+                update_progress(current_progress, f"Discovering songs based from {source_description} ({idx+1}/{max_songs})...")
             
             # Ensure seed track is in database (Railway-friendly auto-processing)
             # Retry up to 5 times with different tracks if processing fails

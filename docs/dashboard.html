@@ -18,9 +18,15 @@
                     <img id="userAvatar" src="" alt="Profile" onclick="toggleProfileMenu()"
                         style="width: 48px; height: 48px; border-radius: 50%; cursor: pointer; border: 2px solid #1db954; object-fit: cover;">
                     <div id="profileMenu" class="profile-menu"
-                        style="display: none; position: absolute; top: 60px; right: 0; background: #282828; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; min-width: 150px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);">
+                        style="display: none; position: absolute; top: 60px; right: 0; background: #282828; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; min-width: 180px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);">
+                        <a href="database_modifier.html"
+                            style="display: block; width: 100%; padding: 12px 16px; background: none; border: none; color: white; text-align: left; cursor: pointer; font-size: 0.95rem; transition: background 0.2s; text-decoration: none;"
+                            onmouseover="this.style.background='rgba(255,255,255,0.1)'"
+                            onmouseout="this.style.background='none'">
+                            🗄️ Database Modifier
+                        </a>
                         <button onclick="logout()"
-                            style="width: 100%; padding: 12px 16px; background: none; border: none; color: white; text-align: left; cursor: pointer; font-size: 0.95rem; transition: background 0.2s;"
+                            style="width: 100%; padding: 12px 16px; background: none; border: none; color: white; text-align: left; cursor: pointer; font-size: 0.95rem; transition: background 0.2s; border-top: 1px solid rgba(255, 255, 255, 0.1);"
                             onmouseover="this.style.background='rgba(255,255,255,0.1)'"
                             onmouseout="this.style.background='none'">
                             Log out
@@ -95,8 +101,8 @@
                             style="width: 100%; height: 8px; border-radius: 4px; background: linear-gradient(to right, #1db954, #9333ea); cursor: pointer; -webkit-appearance: none; appearance: none;">
                         <div
                             style="display: flex; justify-content: space-between; font-size: 0.75rem; color: rgba(255, 255, 255, 0.6); margin-top: 4px;">
-                            <span>Popular (No limit)</span>
-                            <span>Niche (25K max)</span>
+                            <span>Popular</span>
+                            <span>Niche</span>
                         </div>
                     </div>
 
@@ -299,11 +305,11 @@
 
         function updateNicheLevelText(value) {
             const labels = {
-                '1': 'Popular (No limit)',
-                '2': 'Very Popular (3M max)',
-                '3': 'Balanced (1M max)',
-                '4': 'Somewhat Niche (100K max)',
-                '5': 'Niche (25K max)'
+                '1': 'Popular',
+                '2': 'Very Popular',
+                '3': 'Balanced',
+                '4': 'Somewhat Niche',
+                '5': 'Niche'
             };
             document.getElementById('nicheLevelText').textContent = labels[value];
         }

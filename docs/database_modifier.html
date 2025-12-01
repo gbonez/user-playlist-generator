@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Database Modifier - Audio Features</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .search-container {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .search-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .search-field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .search-field label {
+            font-size: 0.9rem;
+            color: rgba(255, 255, 255, 0.8);
+            font-weight: 500;
+        }
+
+        .search-field input,
+        .search-field select {
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            color: white;
+            font-size: 0.95rem;
+        }
+
+        .search-field input:focus,
+        .search-field select:focus {
+            outline: none;
+            border-color: #1db954;
+        }
+
+        .range-field {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .search-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-search {
+            background: #1db954;
+            color: white;
+            flex: 1;
+        }
+
+        .btn-search:hover {
+            background: #1ed760;
+            transform: translateY(-1px);
+        }
+
+        .btn-clear {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+
+        .btn-clear:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .results-container {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 24px;
+        }
+
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .result-item {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+            transition: all 0.2s;
+        }
+
+        .result-item:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 12px;
+        }
+
+        .result-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #1db954;
+            margin-bottom: 4px;
+        }
+
+        .result-artist {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 0.95rem;
+        }
+
+        .result-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn-edit,
+        .btn-delete {
+            padding: 6px 12px;
+            font-size: 0.85rem;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-edit {
+            background: #1db954;
+            color: white;
+        }
+
+        .btn-edit:hover {
+            background: #1ed760;
+        }
+
+        .btn-delete {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .btn-delete:hover {
+            background: #c0392b;
+        }
+
+        .result-features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        .feature-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+
+        .feature-label {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .feature-value {
+            color: white;
+            font-weight: 600;
+            margin-top: 2px;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #1a1a1a;
+            border-radius: 12px;
+            padding: 32px;
+            max-width: 800px;
+            max-height: 90vh;
+            overflow-y: auto;
+            width: 90%;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+        }
+
+        .edit-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+        }
+
+        .edit-field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .edit-field label {
+            font-size: 0.85rem;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .edit-field input {
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            color: white;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+            justify-content: flex-end;
+        }
+
+        .btn-save {
+            background: #1db954;
+            color: white;
+        }
+
+        .btn-cancel {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 12px;
+            margin-top: 24px;
+        }
+
+        .pagination button {
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pagination button:not(:disabled):hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .no-results {
+            text-align: center;
+            padding: 40px;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 1.1rem;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="dashboard-page">
+            <div class="header"
+                style="position: sticky; top: 0; z-index: 100; background: rgba(17, 24, 39, 0.95); backdrop-filter: blur(10px); padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
+                <h2 style="margin: 0; cursor: pointer; font-size: 1.25rem;">
+                    <a href="dashboard.html" style="color: white; text-decoration: none;">← Back to Dashboard</a>
+                </h2>
+                <h2 style="margin: 0;">Database Modifier</h2>
+            </div>
+
+            <div class="dashboard-content">
+                <h1>Audio Features Database</h1>
+                <p class="subtitle">Search, edit, and manage database entries</p>
+
+                <!-- Search Container -->
+                <div class="search-container">
+                    <h3 style="margin-top: 0; margin-bottom: 16px;">Search Criteria</h3>
+
+                    <div class="search-grid">
+                        <!-- Track/Artist Search -->
+                        <div class="search-field">
+                            <label>Track Name</label>
+                            <input type="text" id="trackName" placeholder="Enter track name...">
+                        </div>
+
+                        <div class="search-field">
+                            <label>Artist Name</label>
+                            <input type="text" id="artistName" placeholder="Enter artist name...">
+                        </div>
+
+                        <div class="search-field">
+                            <label>Spotify Track ID</label>
+                            <input type="text" id="spotifyId" placeholder="Enter Spotify ID...">
+                        </div>
+
+                        <!-- Tempo Range -->
+                        <div class="search-field">
+                            <label>Tempo (BPM)</label>
+                            <div class="range-field">
+                                <input type="number" id="tempoMin" placeholder="Min">
+                                <input type="number" id="tempoMax" placeholder="Max">
+                            </div>
+                        </div>
+
+                        <!-- Energy Range -->
+                        <div class="search-field">
+                            <label>Energy (0-1)</label>
+                            <div class="range-field">
+                                <input type="number" step="0.01" id="energyMin" placeholder="Min" min="0" max="1">
+                                <input type="number" step="0.01" id="energyMax" placeholder="Max" min="0" max="1">
+                            </div>
+                        </div>
+
+                        <!-- Danceability Range -->
+                        <div class="search-field">
+                            <label>Danceability (0-1)</label>
+                            <div class="range-field">
+                                <input type="number" step="0.01" id="danceabilityMin" placeholder="Min" min="0" max="1">
+                                <input type="number" step="0.01" id="danceabilityMax" placeholder="Max" min="0" max="1">
+                            </div>
+                        </div>
+
+                        <!-- Mood Range -->
+                        <div class="search-field">
+                            <label>Mood Positive (0-1)</label>
+                            <div class="range-field">
+                                <input type="number" step="0.01" id="moodMin" placeholder="Min" min="0" max="1">
+                                <input type="number" step="0.01" id="moodMax" placeholder="Max" min="0" max="1">
+                            </div>
+                        </div>
+
+                        <!-- Acousticness Range -->
+                        <div class="search-field">
+                            <label>Acousticness (0-1)</label>
+                            <div class="range-field">
+                                <input type="number" step="0.01" id="acousticnessMin" placeholder="Min" min="0" max="1">
+                                <input type="number" step="0.01" id="acousticnessMax" placeholder="Max" min="0" max="1">
+                            </div>
+                        </div>
+
+                        <!-- Instrumental Range -->
+                        <div class="search-field">
+                            <label>Instrumental (0-1)</label>
+                            <div class="range-field">
+                                <input type="number" step="0.01" id="instrumentalMin" placeholder="Min" min="0" max="1">
+                                <input type="number" step="0.01" id="instrumentalMax" placeholder="Max" min="0" max="1">
+                            </div>
+                        </div>
+
+                        <!-- Popularity Range -->
+                        <div class="search-field">
+                            <label>Popularity (0-100)</label>
+                            <div class="range-field">
+                                <input type="number" id="popularityMin" placeholder="Min" min="0" max="100">
+                                <input type="number" id="popularityMax" placeholder="Max" min="0" max="100">
+                            </div>
+                        </div>
+
+                        <!-- Key -->
+                        <div class="search-field">
+                            <label>Musical Key</label>
+                            <select id="musicalKey">
+                                <option value="">All Keys</option>
+                                <option value="0">C</option>
+                                <option value="1">C# / Db</option>
+                                <option value="2">D</option>
+                                <option value="3">D# / Eb</option>
+                                <option value="4">E</option>
+                                <option value="5">F</option>
+                                <option value="6">F# / Gb</option>
+                                <option value="7">G</option>
+                                <option value="8">G# / Ab</option>
+                                <option value="9">A</option>
+                                <option value="10">A# / Bb</option>
+                                <option value="11">B</option>
+                            </select>
+                        </div>
+
+                        <!-- Results per page -->
+                        <div class="search-field">
+                            <label>Results per page</label>
+                            <select id="resultsPerPage">
+                                <option value="10">10</option>
+                                <option value="25" selected>25</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="search-actions">
+                        <button class="btn btn-search" onclick="searchDatabase()">
+                            🔍 Search Database
+                        </button>
+                        <button class="btn btn-clear" onclick="clearSearch()">
+                            Clear All
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Results Container -->
+                <div class="results-container" id="resultsContainer" style="display: none;">
+                    <div class="results-header">
+                        <h3 style="margin: 0;">Search Results</h3>
+                        <span id="resultCount" style="color: rgba(255, 255, 255, 0.6);"></span>
+                    </div>
+
+                    <div id="resultsList"></div>
+
+                    <div class="pagination">
+                        <button id="prevPage" onclick="changePage(-1)">← Previous</button>
+                        <span id="pageInfo" style="color: rgba(255, 255, 255, 0.8);"></span>
+                        <button id="nextPage" onclick="changePage(1)">Next →</button>
+                    </div>
+                </div>
+
+                <!-- Loading State -->
+                <div id="loadingState" class="loading" style="display: none;">
+                    <p>Searching database...</p>
+                </div>
+
+                <!-- No Results -->
+                <div id="noResults" class="no-results" style="display: none;">
+                    <p>No tracks found matching your criteria.</p>
+                    <p style="font-size: 0.9rem; margin-top: 8px;">Try adjusting your search filters.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Modal -->
+    <div class="modal" id="editModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 style="margin: 0;">Edit Track</h2>
+                <button class="modal-close" onclick="closeEditModal()">×</button>
+            </div>
+
+            <div class="edit-grid">
+                <div class="edit-field">
+                    <label>Track Name</label>
+                    <input type="text" id="editTrackName">
+                </div>
+                <div class="edit-field">
+                    <label>Artist Name</label>
+                    <input type="text" id="editArtistName">
+                </div>
+                <div class="edit-field">
+                    <label>Tempo (BPM)</label>
+                    <input type="number" step="0.01" id="editTempo">
+                </div>
+                <div class="edit-field">
+                    <label>Musical Key</label>
+                    <input type="number" id="editKey" min="0" max="11">
+                </div>
+                <div class="edit-field">
+                    <label>Energy</label>
+                    <input type="number" step="0.01" id="editEnergy" min="0" max="1">
+                </div>
+                <div class="edit-field">
+                    <label>Danceability</label>
+                    <input type="number" step="0.01" id="editDanceability" min="0" max="1">
+                </div>
+                <div class="edit-field">
+                    <label>Mood Positive</label>
+                    <input type="number" step="0.01" id="editMood" min="0" max="1">
+                </div>
+                <div class="edit-field">
+                    <label>Acousticness</label>
+                    <input type="number" step="0.01" id="editAcousticness" min="0" max="1">
+                </div>
+                <div class="edit-field">
+                    <label>Instrumental</label>
+                    <input type="number" step="0.01" id="editInstrumental" min="0" max="1">
+                </div>
+                <div class="edit-field">
+                    <label>Popularity</label>
+                    <input type="number" id="editPopularity" min="0" max="100">
+                </div>
+                <div class="edit-field">
+                    <label>Brightness (Hz)</label>
+                    <input type="number" step="0.01" id="editBrightness">
+                </div>
+                <div class="edit-field">
+                    <label>Loudness</label>
+                    <input type="number" step="0.01" id="editLoudness">
+                </div>
+            </div>
+
+            <div class="modal-actions">
+                <button class="btn btn-cancel" onclick="closeEditModal()">Cancel</button>
+                <button class="btn btn-save" onclick="saveEdit()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'https://user-playlist-generator-production.up.railway.app';
+        let currentPage = 1;
+        let totalPages = 1;
+        let currentResults = [];
+        let editingTrackId = null;
+
+        function getSearchParams() {
+            const params = {};
+
+            // Text searches
+            const trackName = document.getElementById('trackName').value.trim();
+            const artistName = document.getElementById('artistName').value.trim();
+            const spotifyId = document.getElementById('spotifyId').value.trim();
+
+            if (trackName) params.track_name = trackName;
+            if (artistName) params.artist_name = artistName;
+            if (spotifyId) params.spotify_id = spotifyId;
+
+            // Range searches
+            const ranges = [
+                ['tempo', 'tempoMin', 'tempoMax'],
+                ['energy', 'energyMin', 'energyMax'],
+                ['danceability', 'danceabilityMin', 'danceabilityMax'],
+                ['mood_positive', 'moodMin', 'moodMax'],
+                ['acousticness', 'acousticnessMin', 'acousticnessMax'],
+                ['instrumental', 'instrumentalMin', 'instrumentalMax'],
+                ['popularity', 'popularityMin', 'popularityMax']
+            ];
+
+            ranges.forEach(([key, minId, maxId]) => {
+                const min = document.getElementById(minId).value;
+                const max = document.getElementById(maxId).value;
+                if (min) params[`${key}_min`] = min;
+                if (max) params[`${key}_max`] = max;
+            });
+
+            // Musical key
+            const musicalKey = document.getElementById('musicalKey').value;
+            if (musicalKey) params.key = musicalKey;
+
+            // Pagination
+            params.page = currentPage;
+            params.per_page = document.getElementById('resultsPerPage').value;
+
+            return params;
+        }
+
+        async function searchDatabase() {
+            const params = getSearchParams();
+
+            // Show loading
+            document.getElementById('loadingState').style.display = 'block';
+            document.getElementById('resultsContainer').style.display = 'none';
+            document.getElementById('noResults').style.display = 'none';
+
+            try {
+                const queryString = new URLSearchParams(params).toString();
+                const response = await fetch(`${API_URL}/api/database/search?${queryString}`);
+
+                if (!response.ok) {
+                    throw new Error('Search failed');
+                }
+
+                const data = await response.json();
+                currentResults = data.results;
+                totalPages = data.total_pages;
+
+                document.getElementById('loadingState').style.display = 'none';
+
+                if (currentResults.length === 0) {
+                    document.getElementById('noResults').style.display = 'block';
+                } else {
+                    displayResults(data);
+                }
+
+            } catch (error) {
+                console.error('Search error:', error);
+                document.getElementById('loadingState').style.display = 'none';
+                alert('Failed to search database. Please try again.');
+            }
+        }
+
+        function displayResults(data) {
+            document.getElementById('resultsContainer').style.display = 'block';
+            document.getElementById('resultCount').textContent =
+                `${data.total_results} tracks found`;
+
+            const resultsList = document.getElementById('resultsList');
+            resultsList.innerHTML = '';
+
+            data.results.forEach(track => {
+                const item = document.createElement('div');
+                item.className = 'result-item';
+                item.innerHTML = `
+                    <div class="result-header">
+                        <div>
+                            <div class="result-title">${escapeHtml(track.track_name)}</div>
+                            <div class="result-artist">${escapeHtml(track.artist_name)}</div>
+                        </div>
+                        <div class="result-actions">
+                            <button class="btn-edit" onclick="openEditModal(${track.id})">Edit</button>
+                            <button class="btn-delete" onclick="deleteTrack(${track.id})">Delete</button>
+                        </div>
+                    </div>
+                    <div class="result-features">
+                        <div class="feature-item">
+                            <div class="feature-label">Tempo</div>
+                            <div class="feature-value">${formatValue(track.tempo_bpm)} BPM</div>
+                        </div>
+                        <div class="feature-item">
+                            <div class="feature-label">Energy</div>
+                            <div class="feature-value">${formatValue(track.energy)}</div>
+                        </div>
+                        <div class="feature-item">
+                            <div class="feature-label">Danceability</div>
+                            <div class="feature-value">${formatValue(track.danceability)}</div>
+                        </div>
+                        <div class="feature-item">
+                            <div class="feature-label">Mood</div>
+                            <div class="feature-value">${formatValue(track.mood_positive)}</div>
+                        </div>
+                        <div class="feature-item">
+                            <div class="feature-label">Acousticness</div>
+                            <div class="feature-value">${formatValue(track.acousticness)}</div>
+                        </div>
+                        <div class="feature-item">
+                            <div class="feature-label">Popularity</div>
+                            <div class="feature-value">${track.popularity || 'N/A'}</div>
+                        </div>
+                        <div class="feature-item">
+                            <div class="feature-label">Spotify ID</div>
+                            <div class="feature-value" style="font-size: 0.7rem;">${track.spotify_track_id}</div>
+                        </div>
+                    </div>
+                `;
+                resultsList.appendChild(item);
+            });
+
+            // Update pagination
+            document.getElementById('pageInfo').textContent = `Page ${currentPage} of ${totalPages}`;
+            document.getElementById('prevPage').disabled = currentPage === 1;
+            document.getElementById('nextPage').disabled = currentPage === totalPages;
+        }
+
+        function changePage(delta) {
+            currentPage += delta;
+            searchDatabase();
+        }
+
+        function clearSearch() {
+            document.getElementById('trackName').value = '';
+            document.getElementById('artistName').value = '';
+            document.getElementById('spotifyId').value = '';
+            document.getElementById('tempoMin').value = '';
+            document.getElementById('tempoMax').value = '';
+            document.getElementById('energyMin').value = '';
+            document.getElementById('energyMax').value = '';
+            document.getElementById('danceabilityMin').value = '';
+            document.getElementById('danceabilityMax').value = '';
+            document.getElementById('moodMin').value = '';
+            document.getElementById('moodMax').value = '';
+            document.getElementById('acousticnessMin').value = '';
+            document.getElementById('acousticnessMax').value = '';
+            document.getElementById('instrumentalMin').value = '';
+            document.getElementById('instrumentalMax').value = '';
+            document.getElementById('popularityMin').value = '';
+            document.getElementById('popularityMax').value = '';
+            document.getElementById('musicalKey').value = '';
+            currentPage = 1;
+
+            document.getElementById('resultsContainer').style.display = 'none';
+            document.getElementById('noResults').style.display = 'none';
+        }
+
+        function openEditModal(trackId) {
+            const track = currentResults.find(t => t.id === trackId);
+            if (!track) return;
+
+            editingTrackId = trackId;
+
+            document.getElementById('editTrackName').value = track.track_name;
+            document.getElementById('editArtistName').value = track.artist_name;
+            document.getElementById('editTempo').value = track.tempo_bpm || '';
+            document.getElementById('editKey').value = track.key_musical || '';
+            document.getElementById('editEnergy').value = track.energy || '';
+            document.getElementById('editDanceability').value = track.danceability || '';
+            document.getElementById('editMood').value = track.mood_positive || '';
+            document.getElementById('editAcousticness').value = track.acousticness || '';
+            document.getElementById('editInstrumental').value = track.instrumental || '';
+            document.getElementById('editPopularity').value = track.popularity || '';
+            document.getElementById('editBrightness').value = track.brightness_hz || '';
+            document.getElementById('editLoudness').value = track.loudness || '';
+
+            document.getElementById('editModal').classList.add('active');
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').classList.remove('active');
+            editingTrackId = null;
+        }
+
+        async function saveEdit() {
+            if (!editingTrackId) return;
+
+            const updatedData = {
+                track_name: document.getElementById('editTrackName').value,
+                artist_name: document.getElementById('editArtistName').value,
+                tempo_bpm: parseFloat(document.getElementById('editTempo').value) || null,
+                key_musical: parseInt(document.getElementById('editKey').value) || null,
+                energy: parseFloat(document.getElementById('editEnergy').value) || null,
+                danceability: parseFloat(document.getElementById('editDanceability').value) || null,
+                mood_positive: parseFloat(document.getElementById('editMood').value) || null,
+                acousticness: parseFloat(document.getElementById('editAcousticness').value) || null,
+                instrumental: parseFloat(document.getElementById('editInstrumental').value) || null,
+                popularity: parseInt(document.getElementById('editPopularity').value) || null,
+                brightness_hz: parseFloat(document.getElementById('editBrightness').value) || null,
+                loudness: parseFloat(document.getElementById('editLoudness').value) || null
+            };
+
+            try {
+                const response = await fetch(`${API_URL}/api/database/update/${editingTrackId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(updatedData)
+                });
+
+                if (!response.ok) {
+                    throw new Error('Update failed');
+                }
+
+                alert('Track updated successfully!');
+                closeEditModal();
+                searchDatabase(); // Refresh results
+
+            } catch (error) {
+                console.error('Update error:', error);
+                alert('Failed to update track. Please try again.');
+            }
+        }
+
+        async function deleteTrack(trackId) {
+            if (!confirm('Are you sure you want to delete this track? This action cannot be undone.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/database/delete/${trackId}`, {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) {
+                    throw new Error('Delete failed');
+                }
+
+                alert('Track deleted successfully!');
+                searchDatabase(); // Refresh results
+
+            } catch (error) {
+                console.error('Delete error:', error);
+                alert('Failed to delete track. Please try again.');
+            }
+        }
+
+        function formatValue(value) {
+            if (value === null || value === undefined) return 'N/A';
+            if (typeof value === 'number') {
+                return value.toFixed(2);
+            }
+            return value;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Allow Enter key to trigger search
+        document.addEventListener('DOMContentLoaded', () => {
+            const inputs = document.querySelectorAll('input');
+            inputs.forEach(input => {
+                input.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        searchDatabase();
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+
+</html>
