@@ -2325,36 +2325,54 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
             print(f"\n[GENRE POOL] Collecting genres from all {len(seed_track_ids)} source tracks ({source_description})...")
             update_progress(15, f"Building genre pool from {len(seed_track_ids)} tracks...")
             
-            # For playlist/album/artist modes: ALL tracks in source should have genres fetched
-            # This is fast because we just query the source, no external API calls
-            for idx, track_id in enumerate(seed_track_ids):
-                try:
-                    track = safe_spotify_call(sp.track, track_id)
-                    if track and 'artists' in track and track['artists']:
-                        artist_name = track['artists'][0]['name']
-                        # Get from database only (no slow API fetching)
-                        try:
-                            conn_check = get_db_connection()
-                            if conn_check:
-                                with conn_check.cursor() as cursor:
+            # Get one persistent database connection for all queries
+            conn_genre = get_db_connection()
+            if not conn_genre:
+                print(f"[GENRE POOL] ✗ Database connection failed - skipping genre pool")
+                enable_genre_matching = False
+                genre_pool = []
+            else:
+                # For playlist/album/artist modes: fetch genres for each unique artist
+                for idx, track_id in enumerate(seed_track_ids):
+                    try:
+                        track = safe_spotify_call(sp.track, track_id)
+                        if track and 'artists' in track and track['artists']:
+                            artist_name = track['artists'][0]['name']
+                            
+                            # Check if artist exists in database
+                            try:
+                                with conn_genre.cursor() as cursor:
                                     cursor.execute(
                                         "SELECT genres FROM artist_genres WHERE artist_name = %s",
                                         (artist_name,)
                                     )
                                     result = cursor.fetchone()
+                                    
                                     if result and result[0]:
+                                        # Artist found in database - use cached genres
                                         artist_genres = result[0]
                                         genre_pool_with_duplicates.extend(artist_genres)
                                         if idx < 5:  # Only log first 5
-                                            print(f"  '{artist_name}': {artist_genres}")
-                                conn_check.close()
-                        except Exception as e:
-                            pass  # Skip if DB unavailable
-                            
-                    if (idx + 1) % 10 == 0:
-                        print(f"  Processed {idx + 1}/{len(seed_track_ids)} tracks...")
-                except Exception as e:
-                    pass  # Skip tracks that fail
+                                            print(f"[GENRE POOL] {idx + 1}/{len(seed_track_ids)}: '{artist_name}' (cached): {artist_genres}")
+                                    else:
+                                        # Artist not in database - fetch and save
+                                        print(f"[GENRE POOL] {idx + 1}/{len(seed_track_ids)}: '{artist_name}' not in DB, fetching...")
+                                        artist_genres = get_artist_genres_live(sp, artist_name)
+                                        if artist_genres:
+                                            genre_pool_with_duplicates.extend(artist_genres)
+                                            print(f"[GENRE POOL]   ✓ Fetched and saved: {artist_genres}")
+                                        else:
+                                            print(f"[GENRE POOL]   ⚠ No genres found for '{artist_name}'")
+                            except Exception as e:
+                                print(f"[GENRE POOL]   ✗ Error processing '{artist_name}': {e}")
+                                
+                        if (idx + 1) % 10 == 0:
+                            print(f"[GENRE POOL] Progress: {idx + 1}/{len(seed_track_ids)} tracks processed")
+                    except Exception as e:
+                        print(f"[GENRE POOL]   ✗ Error processing track {idx + 1}: {e}")
+                
+                conn_genre.close()
+                print(f"[GENRE POOL] ✓ Finished processing all tracks")
             
             print(f"[GENRE POOL] Collected {len(genre_pool_with_duplicates)} total genres ({len(set(genre_pool_with_duplicates))} unique)")
             
