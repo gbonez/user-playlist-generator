@@ -327,27 +327,66 @@ def get_discogs_artist_genres(artist_name):
         print(f"[WARN] Discogs error for {artist_name}: {e}")
         return []
 
-def normalize_genre(genre):
-    """Normalize genre names for better matching"""
+def clean_genre(genre):
+    """
+    Clean and normalize a single genre string:
+    1. Remove non-alphanumeric characters (except spaces)
+    2. Lowercase everything
+    3. Replace spaces with hyphens
+    4. Remove leading/trailing whitespace
+    """
+    import re
+    
+    # Convert to lowercase and strip
     genre = genre.lower().strip()
     
-    # Common mappings
+    # Replace common separators with spaces first
+    genre = genre.replace('_', ' ')
+    genre = genre.replace('/', ' ')
+    genre = genre.replace('&', 'and')
+    
+    # Remove all non-alphanumeric characters except spaces
+    genre = re.sub(r'[^a-z0-9\s]', '', genre)
+    
+    # Replace multiple spaces with single space
+    genre = re.sub(r'\s+', ' ', genre)
+    
+    # Replace spaces with hyphens
+    genre = genre.replace(' ', '-')
+    
+    # Remove any leading/trailing hyphens
+    genre = genre.strip('-')
+    
+    return genre
+
+def normalize_genre(genre):
+    """
+    Normalize genre names for better matching
+    First cleans the genre, then applies common mappings
+    """
+    genre = clean_genre(genre)
+    
+    # Common mappings (after cleaning)
     mappings = {
-        "hip hop": "hip-hop",
-        "r&b": "rnb",
-        "rhythm and blues": "rnb",
-        "electronic dance music": "edm",
-        "drum and bass": "drum-n-bass",
-        "pop rock": "pop-rock",
-        "indie rock": "indie-rock",
-        "alternative rock": "alt-rock",
-        "hard rock": "hard-rock",
-        "heavy metal": "metal",
-        "death metal": "death-metal",
-        "black metal": "black-metal",
-        "thrash metal": "thrash-metal",
-        "power metal": "power-metal",
-        "progressive metal": "progressive-metal",
+        "hiphop": "hip-hop",
+        "rnb": "rnb",
+        "randb": "rnb",
+        "rhythmandblues": "rnb",
+        "electronicdancemusic": "edm",
+        "drumandbass": "drum-n-bass",
+        "drumnbass": "drum-n-bass",
+        "poprock": "pop-rock",
+        "indierock": "indie-rock",
+        "alternativerock": "alt-rock",
+        "altrock": "alt-rock",
+        "hardrock": "hard-rock",
+        "heavymetal": "metal",
+        "deathmetal": "death-metal",
+        "blackmetal": "black-metal",
+        "thrashmetal": "thrash-metal",
+        "powermetal": "power-metal",
+        "progressivemetal": "progressive-metal",
+        "progmetal": "progressive-metal",
     }
     
     return mappings.get(genre, genre)
@@ -488,6 +527,9 @@ def get_artist_genres_live(sp, artist_name):
     # Merge and rank with cross-source prioritization
     top_genres = merge_and_rank_genres(spotify_genres, lastfm_genres, musicbrainz_genres, discogs_genres)
     
+    # Limit to maximum 5 genres
+    top_genres = top_genres[:5]
+    
     print(f"  Final: {top_genres} ({len(top_genres)} total)")
     
     # Step 3: Save to database
@@ -514,32 +556,32 @@ def get_artist_genres_live(sp, artist_name):
     
     return top_genres
 
-def check_genre_match(seed_genres, candidate_genres, min_matches=1):
+def check_genre_match(genre_pool, candidate_genres, min_matches=1):
     """
-    Check if at least min_matches genres match between seed and candidate
+    Check if at least min_matches genres match between genre pool and candidate
     Uses genre expansion to include parent genres and variants for better matching
     
     Args:
-        seed_genres: List of seed artist genres
+        genre_pool: List of genres from entire artist pool (all lottery winners)
         candidate_genres: List of candidate artist genres
         min_matches: Minimum number of matching genres required (default 1)
     
     Returns (bool: has_match, list: matched_genres)
     """
-    if not seed_genres or not candidate_genres:
+    if not genre_pool or not candidate_genres:
         # If either has no genre data, skip genre validation
         print("[INFO] Genre data missing - skipping genre validation")
         return (True, [])
     
     # Normalize and expand genres to include variants
-    seed_normalized = [normalize_genre(g) for g in seed_genres]
+    pool_normalized = [normalize_genre(g) for g in genre_pool]
     candidate_normalized = [normalize_genre(g) for g in candidate_genres]
     
-    seed_expanded = set(expand_genre_variants(seed_normalized))
+    pool_expanded = set(expand_genre_variants(pool_normalized))
     candidate_expanded = set(expand_genre_variants(candidate_normalized))
     
     # Find matches (including expanded variants)
-    matches = seed_expanded & candidate_expanded
+    matches = pool_expanded & candidate_expanded
     
     if len(matches) >= min_matches:
         print(f"[GENRE MATCH] Found {len(matches)} matching genres (required {min_matches}): {list(matches)[:5]}")
@@ -1970,7 +2012,7 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, 
             "tracks_removed": 0
         }
 
-def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None, min_liked_songs=3, generation_mode='liked_songs', source_url=None, job_id=None, running_jobs=None, enable_genre_matching=False, exclude_liked_songs=False):
+def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None, min_liked_songs=3, generation_mode='liked_songs', source_url=None, job_id=None, running_jobs=None, enable_genre_matching=False, exclude_liked_songs=False, genre_matching_mode='strict'):
     """
     Enhanced recommendation script using:
     1. Existing lottery system to pick artists (or custom source)
@@ -1989,6 +2031,7 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         generation_mode: 'liked_songs', 'track', 'artist', or 'playlist'
         source_url: Spotify URL when mode is not 'liked_songs'
         exclude_liked_songs: Whether to exclude liked songs in non-liked-songs modes (default False)
+        genre_matching_mode: 'strict' (require 3 matches) or 'loose' (require 1 match) - default 'strict'
     
     Returns:
         {
@@ -2187,6 +2230,42 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 lottery_winners.append(selected_track_id)
                 print(f"[SEED] Selection {i+1}/{max_songs}: Track ID {selected_track_id}")
         
+        # ===== BUILD GENRE POOL FROM ALL LOTTERY WINNERS =====
+        # Collect all genres from all lottery winners to use as the genre pool
+        genre_pool = set()
+        
+        if enable_genre_matching:
+            print(f"\n[GENRE POOL] Collecting genres from all {len(lottery_winners)} lottery winners...")
+            
+            if generation_mode == 'liked_songs':
+                # For liked_songs mode: lottery_winners are (artist_id, artist_name, artist_info) tuples
+                for winner_aid, winner_name, winner_info in lottery_winners:
+                    winner_genres = get_artist_genres_live(sp, winner_name)
+                    if winner_genres:
+                        genre_pool.update(winner_genres)
+                        print(f"  '{winner_name}': {winner_genres}")
+            else:
+                # For alternative modes: lottery_winners are track IDs
+                for seed_track_id in lottery_winners:
+                    try:
+                        seed_track = safe_spotify_call(sp.track, seed_track_id)
+                        if seed_track and 'artists' in seed_track:
+                            seed_artist_name = seed_track['artists'][0]['name']
+                            seed_genres = get_artist_genres_live(sp, seed_artist_name)
+                            if seed_genres:
+                                genre_pool.update(seed_genres)
+                                print(f"  '{seed_artist_name}': {seed_genres}")
+                    except Exception as e:
+                        print(f"[WARN] Could not fetch genres for seed track {seed_track_id}: {e}")
+            
+            genre_pool = list(genre_pool)
+            print(f"[GENRE POOL] Collected {len(genre_pool)} unique genres from all lottery winners: {genre_pool[:10]}...")
+            
+            if not genre_pool:
+                print(f"[WARN] No genres found in genre pool - will skip genre matching and use distance only")
+        else:
+            print(f"[INFO] Genre matching disabled - will use distance only")
+        
         # For each seed, find similar songs using mathematical similarity
         selected_tracks = []
         added_songs = []  # Track details for frontend display
@@ -2207,10 +2286,6 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 except Exception as e:
                     print(f"[WARN] Could not fetch artist info for seed track {seed_track_id}: {e}")
             print(f"[INFO] Will exclude {len(seed_artist_ids)} seed artists from recommendations")
-        
-        # Track genre matching attempts for strict mode
-        genre_match_attempts = {}  # {seed_index: attempts_count}
-        required_genre_matches = {}  # {seed_index: min_matches_required}
         
         # Main discovery loop: Keep iterating until we have exactly max_songs valid tracks
         # This loop will automatically reroll and generate new seeds if needed
@@ -2411,16 +2486,16 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 continue
             
             # New genre matching logic:
-            # 1. Check up to 100 songs for 3 matching genres
-            # 2. If none found, restart search with 1 genre requirement indefinitely
-            # 3. If seed artist has no genres, use closest distance match regardless of genre
+            # - Strict mode: ALWAYS require 3 genre matches from genre pool
+            # - Loose mode: ALWAYS require 1 genre match from genre pool  
+            # - If genre pool is empty, use closest distance match regardless of genre
             track_found = False
             
             if enable_genre_matching:
-                # Check if seed artist has genres
-                if not seed_genres:
-                    print(f"[WARN] Seed artist '{winner_name}' has no genres, using closest distance match")
-                    # No genres for seed - just use closest distance match
+                # Check if genre pool has genres
+                if not genre_pool:
+                    print(f"[WARN] Genre pool is empty, using closest distance match")
+                    # No genres in pool - just use closest distance match
                     for candidate in similar_tracks:
                         candidate_id = candidate['id']
                         if candidate_id in all_excluded_track_ids:
@@ -2474,21 +2549,27 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                         track_found = True
                         break
                 else:
-                    # Seed has genres - do genre matching
-                    # Phase 1: Check up to 100 songs for 3 matching genres
-                    print(f"[GENRE PHASE 1] Checking up to 100 songs for 3+ matching genres...")
-                    songs_checked = 0
-                    max_checks_phase1 = 100
+                    # Genre pool has genres - use genre matching with genre pool
+                    # Strict mode: Always require 3 matches
+                    # Loose mode: Always require 1 match
+                    
+                    # Determine minimum matches based on mode
+                    if genre_matching_mode == 'loose':
+                        min_required_matches = 1
+                        mode_description = "LOOSE"
+                    else:
+                        min_required_matches = 3
+                        mode_description = "STRICT"
+                    
+                    print(f"[GENRE MATCHING] Searching with {mode_description} mode (require {min_required_matches} genre matches from pool of {len(genre_pool)} genres)...")
                     
                     for candidate in similar_tracks:
-                        if track_found or songs_checked >= max_checks_phase1:
+                        if track_found:
                             break
                         
                         candidate_id = candidate['id']
                         if candidate_id in all_excluded_track_ids:
                             continue
-                        
-                        songs_checked += 1
                         
                         candidate_track = safe_spotify_call(sp.track, candidate_id)
                         if not candidate_track:
@@ -2518,13 +2599,13 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                                 if follower_count > max_follower_count:
                                     continue
                         
-                        # Genre check: Need 3+ matches
+                        # Genre check: Use genre pool instead of individual seed genres
                         candidate_artist_name = candidate_track['artists'][0]['name']
                         candidate_genres = get_artist_genres_live(sp, candidate_artist_name)
-                        genre_match, matched_genres = check_genre_match(seed_genres, candidate_genres, min_matches=3)
+                        genre_match, matched_genres = check_genre_match(genre_pool, candidate_genres, min_matches=min_required_matches)
                         
                         if genre_match:
-                            print(f"[MATCH] ✓ Found {len(matched_genres)} genre matches (required 3): {matched_genres[:5]}")
+                            print(f"[MATCH] ✓ Found {len(matched_genres)} genre matches (required {min_required_matches}): {matched_genres[:5]}")
                             selected_tracks.append(candidate_track)
                             all_excluded_track_ids.add(candidate_id)
                             seen_artist_ids.update(candidate_artist_ids)
@@ -2541,72 +2622,9 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                             track_found = True
                             break
                     
-                    # Phase 2: If no match after 100 songs, restart with 1 genre requirement indefinitely
+                    # If no match found, move to next seed
                     if not track_found:
-                        print(f"[GENRE PHASE 2] No 3-genre match after {songs_checked} songs. Searching with 1+ genre indefinitely...")
-                        
-                        for candidate in similar_tracks:
-                            if track_found:
-                                break
-                            
-                            candidate_id = candidate['id']
-                            if candidate_id in all_excluded_track_ids:
-                                continue
-                            
-                            candidate_track = safe_spotify_call(sp.track, candidate_id)
-                            if not candidate_track:
-                                continue
-                            
-                            candidate_artist_ids = {a['id'] for a in candidate_track['artists']}
-                            
-                            # Basic validation
-                            if generation_mode == 'liked_songs':
-                                if winner_aid in candidate_artist_ids:
-                                    continue
-                            else:
-                                if candidate_artist_ids & seed_artist_ids:
-                                    continue
-                            
-                            if generation_mode == 'liked_songs' and candidate_artist_ids & liked_songs_artist_ids:
-                                continue
-                            
-                            if candidate_artist_ids & seen_artist_ids:
-                                continue
-                            
-                            if max_follower_count is not None:
-                                main_artist_id = candidate_track['artists'][0]['id']
-                                main_artist_profile = safe_spotify_call(sp.artist, main_artist_id)
-                                if main_artist_profile and 'followers' in main_artist_profile:
-                                    follower_count = main_artist_profile['followers'].get('total', 0)
-                                    if follower_count > max_follower_count:
-                                        continue
-                            
-                            # Genre check: Need 1+ match
-                            candidate_artist_name = candidate_track['artists'][0]['name']
-                            candidate_genres = get_artist_genres_live(sp, candidate_artist_name)
-                            genre_match, matched_genres = check_genre_match(seed_genres, candidate_genres, min_matches=1)
-                            
-                            if genre_match:
-                                print(f"[MATCH] ✓ Found {len(matched_genres)} genre matches (required 1): {matched_genres[:5]}")
-                                selected_tracks.append(candidate_track)
-                                all_excluded_track_ids.add(candidate_id)
-                                seen_artist_ids.update(candidate_artist_ids)
-                                added_songs.append({
-                                    'title': candidate_track['name'],
-                                    'artist': ', '.join([a['name'] for a in candidate_track['artists']]),
-                                    'spotify_url': candidate_track['external_urls']['spotify'],
-                                    'based_on_artist': winner_name,
-                                    'genres': matched_genres[:3]
-                                })
-                                print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (based on {winner_name}, distance: {candidate['similarity_distance']:.4f})")
-                                print(f"[INFO] Matched genres: {matched_genres[:3]}")
-                                print(f"[PROGRESS] {len(selected_tracks)}/{max_songs} tracks selected")
-                                track_found = True
-                                break
-                    
-                    # If still no match, move to next seed
-                    if not track_found:
-                        print(f"[REROLL] No genre matches found, moving to next seed")
+                        print(f"[REROLL] No {min_required_matches}-genre matches found in all candidates, moving to next seed")
             
             else:
                 # No genre matching - just validate and pick first valid candidate
