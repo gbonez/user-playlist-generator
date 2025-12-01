@@ -2316,39 +2316,49 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 lottery_winners.append(selected_track_id)
                 print(f"[SEED] Selection {i+1}/{max_songs}: Track ID {selected_track_id}")
         
-        # ===== BUILD GENRE POOL FROM ALL LOTTERY WINNERS =====
-        # Collect all genres from all lottery winners to use as the genre pool
-        # Keep duplicates initially to filter by frequency later
+        # ===== BUILD GENRE POOL FROM SOURCE TRACKS =====
+        # For playlist/album modes: collect genres from ALL source tracks (not just seeds)
+        # For liked_songs mode: skip genre pool (genres already cached in database)
         genre_pool_with_duplicates = []
         
-        if enable_genre_matching:
-            print(f"\n[GENRE POOL] Collecting genres from all {len(lottery_winners)} lottery winners...")
+        if enable_genre_matching and generation_mode != 'liked_songs':
+            print(f"\n[GENRE POOL] Collecting genres from all {len(seed_track_ids)} source tracks ({source_description})...")
+            update_progress(15, f"Building genre pool from {len(seed_track_ids)} tracks...")
             
-            if generation_mode == 'liked_songs':
-                # For liked_songs mode: lottery_winners are (artist_id, artist_name, artist_info) tuples
-                for winner_aid, winner_name, winner_info in lottery_winners:
-                    winner_genres = get_artist_genres_live(sp, winner_name)
-                    if winner_genres:
-                        genre_pool_with_duplicates.extend(winner_genres)  # Keep duplicates for frequency counting
-                        print(f"  '{winner_name}': {winner_genres}")
-            else:
-                # For alternative modes: lottery_winners are track IDs
-                for seed_track_id in lottery_winners:
-                    try:
-                        seed_track = safe_spotify_call(sp.track, seed_track_id)
-                        if seed_track and 'artists' in seed_track:
-                            seed_artist_name = seed_track['artists'][0]['name']
-                            seed_genres = get_artist_genres_live(sp, seed_artist_name)
-                            if seed_genres:
-                                genre_pool_with_duplicates.extend(seed_genres)  # Keep duplicates for frequency counting
-                                print(f"  '{seed_artist_name}': {seed_genres}")
-                    except Exception as e:
-                        print(f"[WARN] Could not fetch genres for seed track {seed_track_id}: {e}")
+            # For playlist/album/artist modes: ALL tracks in source should have genres fetched
+            # This is fast because we just query the source, no external API calls
+            for idx, track_id in enumerate(seed_track_ids):
+                try:
+                    track = safe_spotify_call(sp.track, track_id)
+                    if track and 'artists' in track and track['artists']:
+                        artist_name = track['artists'][0]['name']
+                        # Get from database only (no slow API fetching)
+                        try:
+                            conn_check = get_db_connection()
+                            if conn_check:
+                                with conn_check.cursor() as cursor:
+                                    cursor.execute(
+                                        "SELECT genres FROM artist_genres WHERE artist_name = %s",
+                                        (artist_name,)
+                                    )
+                                    result = cursor.fetchone()
+                                    if result and result[0]:
+                                        artist_genres = result[0]
+                                        genre_pool_with_duplicates.extend(artist_genres)
+                                        if idx < 5:  # Only log first 5
+                                            print(f"  '{artist_name}': {artist_genres}")
+                                conn_check.close()
+                        except Exception as e:
+                            pass  # Skip if DB unavailable
+                            
+                    if (idx + 1) % 10 == 0:
+                        print(f"  Processed {idx + 1}/{len(seed_track_ids)} tracks...")
+                except Exception as e:
+                    pass  # Skip tracks that fail
             
             print(f"[GENRE POOL] Collected {len(genre_pool_with_duplicates)} total genres ({len(set(genre_pool_with_duplicates))} unique)")
             
             # Filter by frequency: only keep genres that appear at least 2 times
-            # This ensures we're matching on genres that are actually representative
             if genre_pool_with_duplicates:
                 genre_pool = filter_genre_pool_by_frequency(genre_pool_with_duplicates, min_occurrences=2)
                 print(f"[GENRE POOL] Final filtered pool: {len(genre_pool)} genres: {genre_pool[:10]}...")
@@ -2356,7 +2366,11 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 genre_pool = []
             
             if not genre_pool:
-                print(f"[WARN] No genres found in genre pool after filtering - will skip genre matching and use distance only")
+                print(f"[WARN] No genres found in genre pool - will skip genre matching and use distance only")
+                enable_genre_matching = False  # Disable if no pool
+        elif generation_mode == 'liked_songs':
+            print(f"[INFO] Liked songs mode - skipping genre pool (genres cached in database)")
+            genre_pool = []
         else:
             print(f"[INFO] Genre matching disabled - will use distance only")
             genre_pool = []
@@ -2803,27 +2817,6 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
             idx += 1
         
         conn.close()
-        
-        # For non-liked-songs modes WITHOUT exclude_liked_songs: check if any selected tracks are in liked songs (lazy check)
-        # If exclude_liked_songs was enabled, we already filtered during generation
-        if generation_mode != 'liked_songs' and not exclude_liked_songs and selected_tracks:
-            print(f"\n[INFO] Checking if any of the {len(selected_tracks)} selected tracks are in your liked songs (lazy check)...")
-            selected_track_ids = [track['id'] for track in selected_tracks]
-            tracks_in_liked = check_tracks_in_liked_songs(sp, selected_track_ids)
-            
-            if tracks_in_liked:
-                print(f"[WARN] Found {len(tracks_in_liked)} tracks already in liked songs, removing them...")
-                # Filter out tracks that are in liked songs
-                selected_tracks = [track for track in selected_tracks if track['id'] not in tracks_in_liked]
-                added_songs = [song for song, track in zip(added_songs, selected_track_ids) if track not in tracks_in_liked]
-                print(f"[INFO] {len(selected_tracks)} tracks remaining after filtering")
-                
-                # TODO: Could regenerate additional tracks here to reach max_songs
-                # For now, we'll just add what we have
-            else:
-                print(f"[INFO] None of the selected tracks are in your liked songs ✓")
-        elif generation_mode != 'liked_songs' and exclude_liked_songs:
-            print(f"[INFO] Skipping post-generation liked songs check (already filtered during generation with exclude_liked_songs=True)")
         
         # Check if we got the requested number of songs
         if len(selected_tracks) < max_songs:
