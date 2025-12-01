@@ -1634,6 +1634,39 @@ def build_existing_artist_ids(tracks):
                     ids.add(artist["id"])
     return ids
 
+def check_tracks_in_liked_songs(sp, track_ids):
+    """
+    Check if specific tracks are in user's liked songs (efficient batch check)
+    
+    Args:
+        sp: Spotify client
+        track_ids: List of track IDs to check (max 50 per API call)
+    
+    Returns:
+        Set of track IDs that are in liked songs
+    """
+    if not track_ids:
+        return set()
+    
+    liked_track_ids = set()
+    
+    try:
+        # Spotify API allows checking up to 50 tracks at once
+        batch_size = 50
+        for i in range(0, len(track_ids), batch_size):
+            batch = track_ids[i:i + batch_size]
+            results = safe_spotify_call(sp.current_user_saved_tracks_contains, batch)
+            if results:
+                # results is a list of booleans
+                for idx, is_liked in enumerate(results):
+                    if is_liked:
+                        liked_track_ids.add(batch[idx])
+        
+        return liked_track_ids
+    except Exception as e:
+        print(f"[WARN] Error checking tracks in liked songs: {e}")
+        return set()
+
 def fetch_liked_songs_artist_ids(sp):
     """
     Fetch all artist IDs from user's liked songs
@@ -1828,7 +1861,7 @@ def run_lite_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, 
             "tracks_removed": 0
         }
 
-def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None, min_liked_songs=3, generation_mode='liked_songs', source_url=None, job_id=None, running_jobs=None, enable_genre_matching=False):
+def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, lastfm_username=None, max_follower_count=None, min_liked_songs=3, generation_mode='liked_songs', source_url=None, job_id=None, running_jobs=None, enable_genre_matching=False, exclude_liked_songs=False):
     """
     Enhanced recommendation script using:
     1. Existing lottery system to pick artists (or custom source)
@@ -1846,6 +1879,7 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         min_liked_songs: Minimum liked songs per artist (default 3)
         generation_mode: 'liked_songs', 'track', 'artist', or 'playlist'
         source_url: Spotify URL when mode is not 'liked_songs'
+        exclude_liked_songs: Whether to exclude liked songs in non-liked-songs modes (default False)
     
     Returns:
         {
@@ -1953,26 +1987,32 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                     "added_songs": []
                 }
         
-        # Fetch liked songs for exclusion (always do this to avoid recommending already-liked tracks)
+        # Only fetch liked songs upfront for liked_songs mode OR if exclude_liked_songs is enabled
+        # For other modes without exclude flag, we'll check after generation (lazy loading)
         liked_songs_artist_ids = set()
         liked_track_ids = set()
-        print(f"[INFO] Fetching liked track IDs for exclusion...")
-        offset = 0
-        while True:
-            results = safe_spotify_call(sp.current_user_saved_tracks, limit=50, offset=offset)
-            if not results or not results.get("items"):
-                break
-            for item in results["items"]:
-                track = item.get("track")
-                if track and track.get("id"):
-                    liked_track_ids.add(track["id"])
-                    for artist in track.get("artists", []):
-                        if artist.get("id"):
-                            liked_songs_artist_ids.add(artist["id"])
-            if len(results["items"]) < 50:
-                break
-            offset += 50
-        print(f"[INFO] Will exclude {len(liked_songs_artist_ids)} artists and {len(liked_track_ids)} tracks from liked songs")
+        
+        if generation_mode == 'liked_songs' or (generation_mode != 'liked_songs' and exclude_liked_songs):
+            mode_desc = "liked_songs mode" if generation_mode == 'liked_songs' else "exclude_liked_songs enabled"
+            print(f"[INFO] Fetching liked track IDs for exclusion ({mode_desc})...")
+            offset = 0
+            while True:
+                results = safe_spotify_call(sp.current_user_saved_tracks, limit=50, offset=offset)
+                if not results or not results.get("items"):
+                    break
+                for item in results["items"]:
+                    track = item.get("track")
+                    if track and track.get("id"):
+                        liked_track_ids.add(track["id"])
+                        for artist in track.get("artists", []):
+                            if artist.get("id"):
+                                liked_songs_artist_ids.add(artist["id"])
+                if len(results["items"]) < 50:
+                    break
+                offset += 50
+            print(f"[INFO] Will exclude {len(liked_songs_artist_ids)} artists and {len(liked_track_ids)} tracks from liked songs")
+        else:
+            print(f"[INFO] Skipping upfront liked songs fetch (not in liked_songs mode) - will check after generation")
         
         # Get current playlist tracks to avoid duplicates
         playlist_items = []
@@ -2276,6 +2316,27 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 break
         
         conn.close()
+        
+        # For non-liked-songs modes WITHOUT exclude_liked_songs: check if any selected tracks are in liked songs (lazy check)
+        # If exclude_liked_songs was enabled, we already filtered during generation
+        if generation_mode != 'liked_songs' and not exclude_liked_songs and selected_tracks:
+            print(f"\n[INFO] Checking if any of the {len(selected_tracks)} selected tracks are in your liked songs (lazy check)...")
+            selected_track_ids = [track['id'] for track in selected_tracks]
+            tracks_in_liked = check_tracks_in_liked_songs(sp, selected_track_ids)
+            
+            if tracks_in_liked:
+                print(f"[WARN] Found {len(tracks_in_liked)} tracks already in liked songs, removing them...")
+                # Filter out tracks that are in liked songs
+                selected_tracks = [track for track in selected_tracks if track['id'] not in tracks_in_liked]
+                added_songs = [song for song, track in zip(added_songs, selected_track_ids) if track not in tracks_in_liked]
+                print(f"[INFO] {len(selected_tracks)} tracks remaining after filtering")
+                
+                # TODO: Could regenerate additional tracks here to reach max_songs
+                # For now, we'll just add what we have
+            else:
+                print(f"[INFO] None of the selected tracks are in your liked songs ✓")
+        elif generation_mode != 'liked_songs' and exclude_liked_songs:
+            print(f"[INFO] Skipping post-generation liked songs check (already filtered during generation with exclude_liked_songs=True)")
         
         # Add all selected tracks to playlist
         if selected_tracks:

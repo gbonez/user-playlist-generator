@@ -306,6 +306,7 @@ def run_script():
     generation_mode = data.get('generation_mode', 'liked_songs')  # Generation mode
     source_url = (data.get('source_url') or '').strip()  # Source URL for non-liked-songs modes
     enable_genre_matching = data.get('enable_genre_matching', False)  # Enable genre matching validation
+    exclude_liked_songs = data.get('exclude_liked_songs', False)  # Exclude liked songs in non-liked-songs modes
     
     if max_songs < 1 or max_songs > 50:
         return jsonify({'error': 'Max songs must be between 1 and 50'}), 400
@@ -356,6 +357,7 @@ def run_script():
             'generation_mode': generation_mode,
             'source_url': source_url if source_url else None,
             'enable_genre_matching': enable_genre_matching,
+            'exclude_liked_songs': exclude_liked_songs,
             'user_id': current_user['id'],
             'started_at': time.time(),
             'result': None,
@@ -406,7 +408,8 @@ def run_script():
                     source_url=source_url if source_url else None,
                     job_id=job_id,
                     running_jobs=running_jobs,
-                    enable_genre_matching=enable_genre_matching
+                    enable_genre_matching=enable_genre_matching,
+                    exclude_liked_songs=exclude_liked_songs
                 )
                 
                 running_jobs[job_id]['result'] = result

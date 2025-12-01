@@ -109,10 +109,23 @@
                         <input type="checkbox" id="enableGenreMatching"
                             style="width: auto; height: 20px; cursor: pointer;">
                         <label for="enableGenreMatching" style="margin: 0; cursor: pointer;">
-                            Enable Genre Matching
+                            Strict Genre Matching
                             <span
-                                style="font-size: 0.85rem; color: rgba(255, 255, 255, 0.6); display: block; margin-top: 4px;">
-                                Recommendations must share at least 1 genre with seed artist
+                                style="font-size: 0.85rem; color: rgba(255, 255, 255, 0.6); display: block; margin-top: 4px; font-style: italic;">
+                                Enable for stricter genre requirements for track generation.
+                            </span>
+                        </label>
+                    </div>
+
+                    <div class="form-group hidden" id="excludeLikedSongsGroup"
+                        style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" id="excludeLikedSongs"
+                            style="width: auto; height: 20px; cursor: pointer;">
+                        <label for="excludeLikedSongs" style="margin: 0; cursor: pointer;">
+                            Exclude Liked Songs
+                            <span
+                                style="font-size: 0.85rem; color: rgba(255, 255, 255, 0.6); display: block; margin-top: 4px; font-style: italic;">
+                                Excludes liked songs from recommendation generation.
                             </span>
                         </label>
                     </div>
@@ -217,6 +230,9 @@
                     window.spotifyUserId = userData.id;
 
                     loadPlaylists();
+
+                    // Initialize UI state for generation mode
+                    toggleSourceUrlInput();
                 } else {
                     console.error('❌ Failed to fetch user info, status:', userResponse.status);
                     const errorText = await userResponse.text();
@@ -264,13 +280,16 @@
             const mode = document.getElementById('generationMode').value;
             const urlGroup = document.getElementById('sourceUrlGroup');
             const minLikedSongsGroup = document.getElementById('minLikedSongsGroup');
+            const excludeLikedSongsGroup = document.getElementById('excludeLikedSongsGroup');
 
             if (mode === 'liked_songs') {
                 urlGroup.classList.add('hidden');
                 minLikedSongsGroup.classList.remove('hidden');
+                excludeLikedSongsGroup.classList.add('hidden');
             } else {
                 urlGroup.classList.remove('hidden');
                 minLikedSongsGroup.classList.add('hidden');
+                excludeLikedSongsGroup.classList.remove('hidden');
             }
         }
 
@@ -364,6 +383,7 @@
             const generationMode = document.getElementById('generationMode').value;
             const sourceUrl = document.getElementById('sourceUrl').value.trim();
             const enableGenreMatching = document.getElementById('enableGenreMatching').checked;
+            const excludeLikedSongs = document.getElementById('excludeLikedSongs').checked;
 
             // Hide previous results
             document.getElementById('addedSongsSection').classList.add('hidden');
@@ -413,7 +433,8 @@
                         min_liked_songs: minLikedSongs,
                         generation_mode: generationMode,
                         source_url: sourceUrl || null,
-                        enable_genre_matching: enableGenreMatching
+                        enable_genre_matching: enableGenreMatching,
+                        exclude_liked_songs: excludeLikedSongs
                     })
                 });
 
