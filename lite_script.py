@@ -407,65 +407,38 @@ def expand_genre_variants(genres):
 
 def merge_and_rank_genres(spotify_genres, lastfm_genres, musicbrainz_genres, discogs_genres):
     """
-    Merge genres from multiple sources and pick top 3-5 most relevant
-    Prioritization:
-    1. Cross-source agreement (genre appears in multiple sources) - highest priority
-    2. Spotify genres (most accurate for music discovery)
-    3. Everything else (Last.fm, MusicBrainz, Discogs)
+    Merge genres from all sources without weighting - just collect all unique genres
+    Used for strict genre matching where we need maximum genre coverage
     """
-    genre_scores = {}
-    genre_source_count = {}  # Track how many sources mention each genre
+    all_genres = set()
     
-    # Track source counts for cross-validation
-    all_sources = [spotify_genres, lastfm_genres, musicbrainz_genres, discogs_genres]
-    for source in all_sources:
-        for genre in source:
-            normalized = normalize_genre(genre)
-            genre_source_count[normalized] = genre_source_count.get(normalized, 0) + 1
+    # Collect all genres from all sources (normalized)
+    for genre in spotify_genres:
+        all_genres.add(normalize_genre(genre))
     
-    # Apply scoring with cross-source bonus
-    for genre, source_count in genre_source_count.items():
-        # Base score starts at 0
-        score = 0
-        
-        # Cross-source agreement gets massive bonus (10 points per additional source)
-        if source_count >= 2:
-            score += 10 * source_count
-        
-        # Spotify genres get weight 5
-        if genre in [normalize_genre(g) for g in spotify_genres]:
-            score += 5
-        
-        # Last.fm genres get weight 2
-        if genre in [normalize_genre(g) for g in lastfm_genres]:
-            score += 2
-        
-        # MusicBrainz genres get weight 2
-        if genre in [normalize_genre(g) for g in musicbrainz_genres]:
-            score += 2
-        
-        # Discogs genres get weight 2
-        if genre in [normalize_genre(g) for g in discogs_genres]:
-            score += 2
-        
-        genre_scores[genre] = score
+    for genre in lastfm_genres:
+        all_genres.add(normalize_genre(genre))
     
-    # Sort by score (highest first)
-    sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
-    top_genres = [genre for genre, score in sorted_genres]
+    for genre in musicbrainz_genres:
+        all_genres.add(normalize_genre(genre))
     
-    # If we have fewer than 3 genres, expand with variants
-    if len(top_genres) < 3 and len(top_genres) > 0:
-        expanded = expand_genre_variants(top_genres)
+    for genre in discogs_genres:
+        all_genres.add(normalize_genre(genre))
+    
+    # Convert to list
+    genre_list = list(all_genres)
+    
+    # If we have fewer than 5 genres, expand with variants to increase matching chances
+    if len(genre_list) < 5 and len(genre_list) > 0:
+        expanded = expand_genre_variants(genre_list)
         # Add expanded genres that aren't already in the list
         for genre in expanded:
-            if genre not in top_genres:
-                top_genres.append(genre)
-                if len(top_genres) >= 3:
+            if genre not in genre_list:
+                genre_list.append(genre)
+                if len(genre_list) >= 10:  # Cap at 10 to avoid too much expansion
                     break
     
-    # Return top 5 genres
-    return top_genres[:5]
+    return genre_list
 
 def get_artist_genres_live(sp, artist_name):
     """
@@ -494,10 +467,16 @@ def get_artist_genres_live(sp, artist_name):
     
     return top_genres
 
-def check_genre_match(seed_genres, candidate_genres):
+def check_genre_match(seed_genres, candidate_genres, min_matches=1):
     """
-    Check if at least 1 genre matches between seed and candidate
+    Check if at least min_matches genres match between seed and candidate
     Uses genre expansion to include parent genres and variants for better matching
+    
+    Args:
+        seed_genres: List of seed artist genres
+        candidate_genres: List of candidate artist genres
+        min_matches: Minimum number of matching genres required (default 1)
+    
     Returns (bool: has_match, list: matched_genres)
     """
     if not seed_genres or not candidate_genres:
@@ -515,16 +494,12 @@ def check_genre_match(seed_genres, candidate_genres):
     # Find matches (including expanded variants)
     matches = seed_expanded & candidate_expanded
     
-    if matches:
-        print(f"[GENRE MATCH] Found {len(matches)} matching genres: {list(matches)}")
-        print(f"  Seed: {seed_genres} (expanded: {list(seed_expanded)[:5]}...)")
-        print(f"  Candidate: {candidate_genres} (expanded: {list(candidate_expanded)[:5]}...)")
+    if len(matches) >= min_matches:
+        print(f"[GENRE MATCH] Found {len(matches)} matching genres (required {min_matches}): {list(matches)[:5]}")
         return (True, list(matches))
     else:
-        print(f"[GENRE MISMATCH] No overlap found")
-        print(f"  Seed genres: {seed_genres} (expanded: {list(seed_expanded)[:5]}...)")
-        print(f"  Candidate genres: {candidate_genres} (expanded: {list(candidate_expanded)[:5]}...)")
-        return (False, [])
+        print(f"[GENRE MISMATCH] Only {len(matches)} matches (required {min_matches})")
+        return (False, list(matches))
 
 def add_track_to_audio_features_db(conn, track_id, artist_name, track_name, spotify_uri, popularity, features, youtube_title):
     """
@@ -2247,7 +2222,33 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         seen_artist_ids = set(existing_artist_ids)
         all_excluded_track_ids = liked_track_ids | playlist_track_ids
         
-        for idx, winner in enumerate(lottery_winners):
+        # Track genre matching attempts for strict mode
+        genre_match_attempts = {}  # {seed_index: attempts_count}
+        required_genre_matches = {}  # {seed_index: min_matches_required}
+        
+        idx = 0
+        while len(selected_tracks) < max_songs and idx < len(lottery_winners) * 3:  # Allow more iterations for rerolls
+            if idx >= len(lottery_winners):
+                # Need to reroll - generate new lottery winner
+                print(f"\n[REROLL] Need more tracks ({len(selected_tracks)}/{max_songs}), generating new lottery winner...")
+                if generation_mode == 'liked_songs':
+                    # Pick a new random artist from the artist pool
+                    available_artists = [aid for aid in artist_ids if aid not in rolled_artist_ids]
+                    if not available_artists:
+                        print("[WARN] All artists exhausted, cannot generate more tracks")
+                        break
+                    winner_aid = random.choices(available_artists, weights=[artist_weights[artist_ids.index(aid)] for aid in available_artists])[0]
+                    rolled_artist_ids.add(winner_aid)
+                    winner_name = artists_data[winner_aid]['name']
+                    lottery_winners.append(winner_aid)
+                    print(f"[LOTTERY {idx+1}] Re-rolled: {winner_name}")
+                else:
+                    # Alternative modes: pick another random seed track
+                    winner = random.choice(seed_track_ids)
+                    lottery_winners.append(winner)
+                    print(f"[LOTTERY {idx+1}] Re-rolled seed track: {winner}")
+            
+            winner = lottery_winners[idx]
             if len(selected_tracks) >= max_songs:
                 break
             
@@ -2452,18 +2453,41 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                         if follower_count > max_follower_count:
                             continue
                 
-                # 5. Check genre match (at least 1 overlapping genre) - if enabled
+                # 5. Check genre match with progressive requirements (3 → 2 → 1) - if enabled
                 # Live fetch genres from all 4 sources, keep rerolling until match
                 if enable_genre_matching:
                     candidate_artist_name = candidate_track['artists'][0]['name']
                     candidate_genres = get_artist_genres_live(sp, candidate_artist_name)
-                    genre_match, matched_genres = check_genre_match(seed_genres, candidate_genres)
+                    
+                    # Initialize tracking for this seed if not exists
+                    if idx not in genre_match_attempts:
+                        genre_match_attempts[idx] = 0
+                        required_genre_matches[idx] = 3  # Start with 3 required matches
+                    
+                    # Increment attempt counter
+                    genre_match_attempts[idx] += 1
+                    
+                    # Progressive fallback: 5 matches for first 5 attempts, then 2, then 1
+                    if genre_match_attempts[idx] > 10:
+                        required_matches = 1  # After 10 attempts, accept 1 match
+                    elif genre_match_attempts[idx] > 5:
+                        required_matches = 3  # After 5 attempts, accept 3 matches
+                    else:
+                        required_matches = 5  # First 5 attempts need 5 matches
+                    
+                    genre_match, matched_genres = check_genre_match(seed_genres, candidate_genres, min_matches=required_matches)
                     
                     if not genre_match:
-                        print(f"[SKIP] No genre match between '{winner_name}' (genres: {seed_genres}) and '{candidate_artist_name}' (genres: {candidate_genres})")
+                        print(f"[SKIP] Only {len(matched_genres)} genre matches (need {required_matches}) - attempt {genre_match_attempts[idx]}")
+                        
+                        # After 15 total attempts with no match, re-roll the seed entirely
+                        if genre_match_attempts[idx] >= 15:
+                            print(f"[REROLL] Failed to find match after 15 attempts, moving to next seed")
+                            idx += 1
+                            break
                         continue
                     else:
-                        print(f"[MATCH] Genre match found: {matched_genres}")
+                        print(f"[MATCH] ✓ Found {len(matched_genres)} genre matches (required {required_matches}): {matched_genres[:5]}")
                 
                 # Valid candidate found!
                 selected_tracks.append(candidate_track)
@@ -2479,7 +2503,16 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 })
                 
                 print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (based on {winner_name}, distance: {candidate['similarity_distance']:.4f})")
+                print(f"[PROGRESS] {len(selected_tracks)}/{max_songs} tracks selected")
+                
+                # Move to next seed
+                idx += 1
                 break
+            else:
+                # No valid candidate found in similar tracks - need to try next seed
+                if not similar_tracks or candidate == similar_tracks[-1]:
+                    print(f"[WARN] No valid candidates found for seed {winner_name}, moving to next seed")
+                    idx += 1
         
         conn.close()
         
@@ -2503,6 +2536,12 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                 print(f"[INFO] None of the selected tracks are in your liked songs ✓")
         elif generation_mode != 'liked_songs' and exclude_liked_songs:
             print(f"[INFO] Skipping post-generation liked songs check (already filtered during generation with exclude_liked_songs=True)")
+        
+        # Check if we got the requested number of songs
+        if len(selected_tracks) < max_songs:
+            print(f"\n[WARN] Only found {len(selected_tracks)}/{max_songs} tracks after exhausting all options")
+        else:
+            print(f"\n[SUCCESS] ✓ Found all {len(selected_tracks)}/{max_songs} requested tracks!")
         
         # Add all selected tracks to playlist
         if selected_tracks:
