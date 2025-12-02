@@ -83,7 +83,8 @@ def fetch_tracks_from_source(sp, generation_mode, source_url):
         source_url: Spotify URL to fetch from
     
     Returns:
-        tuple: (list of track_ids, source_description)
+        tuple: (list of track_objects, source_description)
+               track_objects is a list of full track dictionaries
                source_description is a string describing the source for logging
     """
     url_type, url_id = parse_spotify_url(source_url)
@@ -97,7 +98,7 @@ def fetch_tracks_from_source(sp, generation_mode, source_url):
         if not track:
             raise ValueError(f"Could not fetch track: {url_id}")
         source_desc = f"track '{track['name']}' by {track['artists'][0]['name']}"
-        return [track['id']], source_desc
+        return [track], source_desc
     
     elif generation_mode == 'artist':
         # Artist mode - get all tracks from artist's top tracks and albums
@@ -106,12 +107,12 @@ def fetch_tracks_from_source(sp, generation_mode, source_url):
             raise ValueError(f"Could not fetch artist: {url_id}")
         
         source_desc = f"artist '{artist['name']}'"
-        track_ids = []
+        tracks = []
         
-        # Get top tracks
+        # Get top tracks (already full track objects)
         top_tracks = safe_spotify_call(sp.artist_top_tracks, url_id, country='US')
         if top_tracks and 'tracks' in top_tracks:
-            track_ids.extend([t['id'] for t in top_tracks['tracks'] if t.get('id')])
+            tracks.extend([t for t in top_tracks['tracks'] if t.get('id')])
         
         # Get albums and their tracks
         albums = safe_spotify_call(sp.artist_albums, url_id, limit=50, album_type='album,single')
@@ -119,9 +120,14 @@ def fetch_tracks_from_source(sp, generation_mode, source_url):
             for album in albums['items'][:10]:  # Limit to 10 albums
                 album_tracks = safe_spotify_call(sp.album_tracks, album['id'])
                 if album_tracks and 'items' in album_tracks:
-                    track_ids.extend([t['id'] for t in album_tracks['items'] if t.get('id')])
+                    # Album track items need to be fetched as full tracks
+                    for track_simple in album_tracks['items']:
+                        if track_simple.get('id'):
+                            track = safe_spotify_call(sp.track, track_simple['id'])
+                            if track:
+                                tracks.append(track)
         
-        return track_ids, source_desc
+        return tracks, source_desc
     
     elif generation_mode == 'album':
         # Album mode - get all tracks from album
@@ -130,13 +136,18 @@ def fetch_tracks_from_source(sp, generation_mode, source_url):
             raise ValueError(f"Could not fetch album: {url_id}")
         
         source_desc = f"album '{album['name']}' by {album['artists'][0]['name']}"
-        track_ids = []
+        tracks = []
         
         album_tracks = safe_spotify_call(sp.album_tracks, url_id)
         if album_tracks and 'items' in album_tracks:
-            track_ids.extend([t['id'] for t in album_tracks['items'] if t.get('id')])
+            # Album track items need to be fetched as full tracks
+            for track_simple in album_tracks['items']:
+                if track_simple.get('id'):
+                    track = safe_spotify_call(sp.track, track_simple['id'])
+                    if track:
+                        tracks.append(track)
         
-        return track_ids, source_desc
+        return tracks, source_desc
     
     elif generation_mode == 'playlist':
         # Playlist mode - get all tracks from playlist
@@ -145,7 +156,7 @@ def fetch_tracks_from_source(sp, generation_mode, source_url):
             raise ValueError(f"Could not fetch playlist: {url_id}")
         
         source_desc = f"playlist '{playlist['name']}' by {playlist['owner']['display_name']}"
-        track_ids = []
+        tracks = []
         
         # Fetch all tracks from playlist (handle pagination)
         offset = 0
@@ -157,13 +168,13 @@ def fetch_tracks_from_source(sp, generation_mode, source_url):
             for item in results['items']:
                 track = item.get('track')
                 if track and track.get('id'):
-                    track_ids.append(track['id'])
+                    tracks.append(track)
             
             if len(results['items']) < 100:
                 break
             offset += 100
         
-        return track_ids, source_desc
+        return tracks, source_desc
     
     else:
         raise ValueError(f"Unsupported generation mode: {generation_mode}")
@@ -520,7 +531,7 @@ def merge_and_rank_genres(spotify_genres, lastfm_genres, musicbrainz_genres, dis
 def get_artist_genres_live(sp, artist_name):
     """
     Fetch genres for an artist - checks database first, then fetches from APIs if needed
-    Returns list of genres (saves to database after fetching from APIs)
+    Returns list of genres (saves to database with artist_id after fetching from APIs)
     """
     print(f"[GENRE] Fetching genres for: {artist_name}")
     
@@ -548,10 +559,23 @@ def get_artist_genres_live(sp, artist_name):
         if conn:
             conn.close()
     
-    # Step 2: Fetch from all API sources
+    # Step 2: Fetch artist ID and genres from Spotify first
     print(f"[GENRE] Fetching from APIs...")
-    spotify_genres = get_spotify_artist_genres(sp, artist_name)
-    print(f"  Spotify: {spotify_genres}")
+    artist_id = None
+    try:
+        results = safe_spotify_call(sp.search, q=f"artist:{artist_name}", type="artist", limit=1)
+        if results and "artists" in results and results["artists"]["items"]:
+            artist = results["artists"]["items"][0]
+            artist_id = artist.get("id")
+            spotify_genres = [genre.lower() for genre in artist.get("genres", [])]
+            print(f"  Spotify ID: {artist_id}")
+            print(f"  Spotify: {spotify_genres}")
+        else:
+            spotify_genres = []
+            print(f"  Spotify: Artist not found")
+    except Exception as e:
+        print(f"  Spotify error: {e}")
+        spotify_genres = []
     
     lastfm_genres = get_lastfm_artist_genres(artist_name)
     print(f"  Last.fm: {lastfm_genres}")
@@ -570,27 +594,29 @@ def get_artist_genres_live(sp, artist_name):
     
     print(f"  Final: {top_genres} ({len(top_genres)} total)")
     
-    # Step 3: Save to database
-    if top_genres:
-        try:
-            conn = get_db_connection()
-            if conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("""
-                        INSERT INTO artist_genres (artist_name, genres)
-                        VALUES (%s, %s)
-                        ON CONFLICT (artist_name) 
-                        DO UPDATE SET genres = EXCLUDED.genres
-                    """, (artist_name, top_genres))
-                    conn.commit()
-                    print(f"  Saved {len(top_genres)} genres to database")
-        except Exception as e:
-            print(f"[WARN] Failed to save genres to database: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                conn.close()
+    # Step 3: Save to database with artist_id (even if no genres, to cache the artist_id)
+    try:
+        conn = get_db_connection()
+        if conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO artist_genres (artist_name, genres, spotify_artist_id)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (artist_name) 
+                    DO UPDATE SET genres = EXCLUDED.genres, spotify_artist_id = EXCLUDED.spotify_artist_id
+                """, (artist_name, top_genres if top_genres else [], artist_id))
+                conn.commit()
+                if top_genres:
+                    print(f"  Saved {len(top_genres)} genres + artist ID to database")
+                else:
+                    print(f"  Saved artist ID to database (no genres found)")
+    except Exception as e:
+        print(f"[WARN] Failed to save to database: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
     
     return top_genres
 
@@ -758,20 +784,33 @@ def ensure_track_in_db(sp, conn, track_id):
         return False
     
     # Check if track already exists
+    print(f"[DB CHECK] Querying database for track {track_id[:10]}...")
+    start_time = time.time()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 "SELECT id FROM audio_features WHERE spotify_track_id = %s",
                 (track_id,)
             )
-            if cursor.fetchone():
+            result = cursor.fetchone()
+            query_time = time.time() - start_time
+            print(f"[DB CHECK] Query completed in {query_time:.2f}s")
+            
+            if result:
+                print(f"[DB CHECK] ✅ Track found in database (id: {result[0]})")
                 return True  # Already in database
+            else:
+                print(f"[DB CHECK] ❌ Track NOT in database, will need to process")
     except Exception as e:
-        print(f"[WARN] Error checking if track exists in DB: {e}")
+        query_time = time.time() - start_time
+        print(f"[ERROR] Database query failed after {query_time:.2f}s: {e}")
+        import traceback
+        traceback.print_exc()
         return False
     
     # Track not in database - process it
     print(f"[INFO] Track {track_id} not in database, processing now...")
+    print(f"[INFO] This will take 30-60 seconds (YouTube search + download + audio analysis)...")
     
     try:
         # Use audio_utils to process track
@@ -958,7 +997,10 @@ def compare_genres(seed_genres, candidate_genres):
     return (len(shared) > 0, list(shared))
 
 def safe_spotify_call(func, *args, **kwargs):
-    """Spotify call wrapper with retries, 404 skip, and None fallback."""
+    """Spotify call wrapper with retries, 404 skip, and None fallback. Includes rate limiting."""
+    # Add small delay to avoid rate limiting (Spotify allows ~100 req/min, so 0.6s = safe)
+    time.sleep(0.1)
+    
     retries = 3
     for attempt in range(retries):
         try:
@@ -1017,7 +1059,7 @@ def validate_track_lite(track, existing_artist_ids=None, liked_songs_artist_ids=
 
     return True
 
-def get_similar_tracks_by_audio_features_db(sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids=None, liked_track_ids=None, max_follower_count=None):
+def get_similar_tracks_by_audio_features_db(sp, seed_track_id, existing_artist_ids, liked_songs_artist_ids=None, liked_track_ids=None, max_follower_count=None, genre_pool=None):
     """
     Find similar tracks using the audio features database and YouTube/librosa analysis
     
@@ -1035,6 +1077,7 @@ def get_similar_tracks_by_audio_features_db(sp, seed_track_id, existing_artist_i
         liked_songs_artist_ids: Set of artist IDs from user's liked songs (to exclude)
         liked_track_ids: List of track IDs the user has liked (to exclude from results)
         max_follower_count: Maximum artist follower count (None = no limit)
+        genre_pool: Optional list of genres to validate against (instead of Last.fm calls)
     
     Returns:
         Track object if found, None otherwise
@@ -1140,13 +1183,12 @@ def get_similar_tracks_by_audio_features_db(sp, seed_track_id, existing_artist_i
             
             print(f"[INFO] Found {len(similar_tracks_list)} similar tracks in database, validating...")
             
-            # Fetch seed track genres from Last.fm (once, outside the loop)
-            print(f"[INFO] Fetching genres for seed track from Last.fm...")
-            seed_genres = get_lastfm_track_genres(artist_name, track_name)
-            if seed_genres:
-                print(f"[DEBUG] Seed track genres: {seed_genres}")
+            # Use genre pool instead of fetching from Last.fm (avoid hundreds of API calls)
+            use_genre_validation = genre_pool and len(genre_pool) > 0
+            if use_genre_validation:
+                print(f"[INFO] Using genre pool for validation ({len(genre_pool)} genres)")
             else:
-                print(f"[DEBUG] No genres found for seed track.")
+                print(f"[INFO] No genre pool provided - skipping genre validation")
             
             # Try each similar track until we find one that passes validation
             for idx, similar_track_info in enumerate(similar_tracks_list, 1):
@@ -1164,26 +1206,32 @@ def get_similar_tracks_by_audio_features_db(sp, seed_track_id, existing_artist_i
                     print(f"[SKIP] Track did not pass validation requirements")
                     continue
                 
-                # GENRE VALIDATION: Check if candidate shares at least one genre with seed
-                if LASTFM_API_KEY and seed_genres:
-                    print(f"[INFO] Checking genre compatibility...")
-                    candidate_artist = similar_track_info['artist_name']
-                    candidate_track = similar_track_info['track_name']
-                    candidate_genres = get_lastfm_track_genres(candidate_artist, candidate_track)
+                # GENRE VALIDATION: Use genre pool to check if candidate artist matches
+                if use_genre_validation:
+                    print(f"[INFO] Checking genre compatibility against pool...")
+                    candidate_artist_name = similar_track['artists'][0]['name']
+                    
+                    # Get candidate artist genres from database (fast lookup, no API calls)
+                    candidate_genres = get_artist_genres_live(sp, candidate_artist_name)
                     
                     if candidate_genres:
                         print(f"[INFO] Candidate genres: {', '.join(candidate_genres[:5])}")
-                        has_match, shared_genres = compare_genres(seed_genres, candidate_genres)
+                        # Check if candidate has at least 1 genre matching the pool
+                        has_match, matched = check_genre_match(
+                            genre_pool, 
+                            candidate_genres, 
+                            min_matches=1,
+                            max_common_genres=1,
+                            strict_mode=False  # Use loose mode for similarity matching
+                        )
                         
                         if has_match:
-                            print(f"[SUCCESS] ✓ Genre match found: {', '.join(shared_genres)}")
+                            print(f"[SUCCESS] ✓ Genre match found: {', '.join(matched[:3])}")
                         else:
-                            print(f"[SKIP] No shared genres between seed and candidate")
+                            print(f"[SKIP] No genre overlap with source pool")
                             continue
                     else:
                         print(f"[WARN] No genre data for candidate - accepting anyway (can't validate)")
-                    
-                    time.sleep(0.2)  # Rate limit courtesy for Last.fm API
                 
                 # Found a valid track!
                 print(f"[SUCCESS] ✓ Found mathematically similar track: {similar_track['name']} by {similar_track['artists'][0]['name']}")
@@ -1510,7 +1558,8 @@ def select_track_for_artist_lite(sp, artist_name, existing_artist_ids, liked_son
             existing_artist_ids, 
             liked_songs_artist_ids,
             liked_track_ids,
-            max_follower_count
+            max_follower_count,
+            genre_pool=None  # No genre pool in lite mode - skip Last.fm validation
         )
         
         if similar_track:
@@ -2195,13 +2244,13 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
             
             try:
                 update_progress(10, f"Fetching {generation_mode} data from Spotify...")
-                seed_track_ids, source_description = fetch_tracks_from_source(sp, generation_mode, source_url)
+                seed_tracks, source_description = fetch_tracks_from_source(sp, generation_mode, source_url)
                 print(f"[MODE] Running in {generation_mode.upper()} mode")
                 print(f"[INFO] Discovering recommendations based on {source_description}")
-                print(f"[INFO] Found {len(seed_track_ids)} seed tracks from source")
-                update_progress(25, f"Found {len(seed_track_ids)} tracks from {source_description}")
+                print(f"[INFO] Found {len(seed_tracks)} seed tracks from source")
+                update_progress(25, f"Found {len(seed_tracks)} tracks from {source_description}")
                 
-                if not seed_track_ids:
+                if not seed_tracks:
                     conn.close()
                     return {
                         "success": False,
@@ -2209,6 +2258,10 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                         "tracks_added": 0,
                         "added_songs": []
                     }
+                
+                # Build ID list and ID-to-track mapping for efficient lookups
+                seed_track_ids = [t['id'] for t in seed_tracks]
+                seed_track_map = {t['id']: t for t in seed_tracks}  # For efficient artist name lookup
                 
                 # For alternative modes, we don't need liked songs data
                 artists_data = None
@@ -2285,6 +2338,10 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
             rolled_artist_ids = set()
             lottery_winners = []
             
+            # No seed_track_map for liked_songs mode (not needed)
+            seed_track_map = {}
+            seed_track_ids = []
+            
             print(f"\n[LOTTERY] Drawing {num_winners} lottery winners from {len(artist_ids)} artists...")
             for i in range(num_winners * 3):  # Try up to 3x to get enough unique winners
                 if len(lottery_winners) >= num_winners:
@@ -2323,53 +2380,91 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         
         if enable_genre_matching and generation_mode != 'liked_songs':
             print(f"\n[GENRE POOL] Collecting genres from all {len(seed_track_ids)} source tracks ({source_description})...")
+            print(f"[GENRE POOL] Starting genre pool building process...")
             update_progress(15, f"Building genre pool from {len(seed_track_ids)} tracks...")
             
             # Get one persistent database connection for all queries
+            print(f"[GENRE POOL] Connecting to database...")
             conn_genre = get_db_connection()
             if not conn_genre:
                 print(f"[GENRE POOL] ✗ Database connection failed - skipping genre pool")
                 enable_genre_matching = False
                 genre_pool = []
             else:
-                # For playlist/album/artist modes: fetch genres for each unique artist
-                for idx, track_id in enumerate(seed_track_ids):
-                    try:
-                        track = safe_spotify_call(sp.track, track_id)
-                        if track and 'artists' in track and track['artists']:
-                            artist_name = track['artists'][0]['name']
+                print(f"[GENRE POOL] ✓ Database connected successfully")
+                
+                # Collect unique artists with their IDs from tracks (already cached!)
+                unique_artists = {}  # artist_id -> (artist_name, genres)
+                for track in seed_track_map.values():
+                    if 'artists' in track and track['artists']:
+                        artist = track['artists'][0]
+                        artist_id = artist.get('id')
+                        artist_name = artist.get('name')
+                        if artist_id and artist_id not in unique_artists:
+                            unique_artists[artist_id] = (artist_name, [])
+                
+                print(f"[GENRE POOL] Found {len(unique_artists)} unique artists to process")
+                
+                # Batch query using artist IDs (MUCH faster than name search!)
+                try:
+                    with conn_genre.cursor() as cursor:
+                        artist_ids = list(unique_artists.keys())
+                        # Query by spotify_artist_id for instant lookup
+                        cursor.execute(
+                            "SELECT spotify_artist_id, genres FROM artist_genres WHERE spotify_artist_id = ANY(%s)",
+                            (artist_ids,)
+                        )
+                        results = cursor.fetchall()
+                        
+                        # Store results by artist_id
+                        for artist_id, genres in results:
+                            if genres and artist_id in unique_artists:
+                                artist_name, _ = unique_artists[artist_id]
+                                unique_artists[artist_id] = (artist_name, genres)
+                        
+                        cached_count = sum(1 for _, genres in unique_artists.values() if genres)
+                        missing_count = len(unique_artists) - cached_count
+                        print(f"[GENRE POOL] ✓ Found {cached_count} artists in database")
+                        
+                        if missing_count > 0:
+                            print(f"[GENRE POOL] ⚠ {missing_count} artists not in database - processing now...")
                             
-                            # Check if artist exists in database
-                            try:
-                                with conn_genre.cursor() as cursor:
-                                    cursor.execute(
-                                        "SELECT genres FROM artist_genres WHERE artist_name = %s",
-                                        (artist_name,)
-                                    )
-                                    result = cursor.fetchone()
+                            # Process missing artists and add to database
+                            for artist_id, (artist_name, genres) in list(unique_artists.items()):
+                                if not genres:  # Artist not in database
+                                    print(f"[GENRE POOL]   Processing: {artist_name}...")
+                                    fetched_genres = get_artist_genres_live(sp, artist_name)
                                     
-                                    if result and result[0]:
-                                        # Artist found in database - use cached genres
-                                        artist_genres = result[0]
-                                        genre_pool_with_duplicates.extend(artist_genres)
-                                        if idx < 5:  # Only log first 5
-                                            print(f"[GENRE POOL] {idx + 1}/{len(seed_track_ids)}: '{artist_name}' (cached): {artist_genres}")
+                                    if fetched_genres:
+                                        # Save to database with artist_id
+                                        try:
+                                            cursor.execute("""
+                                                INSERT INTO artist_genres (artist_name, genres, spotify_artist_id)
+                                                VALUES (%s, %s, %s)
+                                                ON CONFLICT (artist_name) DO UPDATE 
+                                                SET genres = EXCLUDED.genres, spotify_artist_id = EXCLUDED.spotify_artist_id
+                                            """, (artist_name, fetched_genres, artist_id))
+                                            conn_genre.commit()
+                                            unique_artists[artist_id] = (artist_name, fetched_genres)
+                                            print(f"[GENRE POOL]   ✓ Saved {len(fetched_genres)} genres for {artist_name}")
+                                        except Exception as e:
+                                            print(f"[GENRE POOL]   ✗ Failed to save {artist_name}: {e}")
+                                            conn_genre.rollback()
                                     else:
-                                        # Artist not in database - fetch and save
-                                        print(f"[GENRE POOL] {idx + 1}/{len(seed_track_ids)}: '{artist_name}' not in DB, fetching...")
-                                        artist_genres = get_artist_genres_live(sp, artist_name)
-                                        if artist_genres:
-                                            genre_pool_with_duplicates.extend(artist_genres)
-                                            print(f"[GENRE POOL]   ✓ Fetched and saved: {artist_genres}")
-                                        else:
-                                            print(f"[GENRE POOL]   ⚠ No genres found for '{artist_name}'")
-                            except Exception as e:
-                                print(f"[GENRE POOL]   ✗ Error processing '{artist_name}': {e}")
-                                
-                        if (idx + 1) % 10 == 0:
-                            print(f"[GENRE POOL] Progress: {idx + 1}/{len(seed_track_ids)} tracks processed")
-                    except Exception as e:
-                        print(f"[GENRE POOL]   ✗ Error processing track {idx + 1}: {e}")
+                                        print(f"[GENRE POOL]   ⚠ No genres found for {artist_name}")
+                        
+                        # Build genre pool from all artists (cached + newly processed)
+                        for artist_id, (artist_name, genres) in unique_artists.items():
+                            if genres:
+                                genre_pool_with_duplicates.extend(genres)
+                                print(f"[GENRE POOL]   ✓ {artist_name}: {genres}")
+                            else:
+                                print(f"[GENRE POOL]   ⚠ {artist_name}: No genres available")
+                        
+                except Exception as e:
+                    print(f"[GENRE POOL] ✗ Database error: {e}")
+                    import traceback
+                    traceback.print_exc()
                 
                 conn_genre.close()
                 print(f"[GENRE POOL] ✓ Finished processing all tracks")
@@ -2403,15 +2498,12 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
         seed_artist_ids = set()
         if generation_mode != 'liked_songs':
             print(f"[INFO] Collecting artist IDs from seed tracks to exclude from recommendations...")
-            for seed_track_id in seed_track_ids:
-                try:
-                    seed_track = safe_spotify_call(sp.track, seed_track_id)
-                    if seed_track and 'artists' in seed_track:
-                        for artist in seed_track['artists']:
-                            if artist.get('id'):
-                                seed_artist_ids.add(artist['id'])
-                except Exception as e:
-                    print(f"[WARN] Could not fetch artist info for seed track {seed_track_id}: {e}")
+            # Use cached track data from seed_track_map instead of making new API calls!
+            for track_id, track in seed_track_map.items():
+                if track and 'artists' in track:
+                    for artist in track['artists']:
+                        if artist.get('id'):
+                            seed_artist_ids.add(artist['id'])
             print(f"[INFO] Will exclude {len(seed_artist_ids)} seed artists from recommendations")
         
         # Main discovery loop: Keep iterating until we have exactly max_songs valid tracks
@@ -2556,23 +2648,11 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                     print(f"[WARN] Failed to process seed track after {max_retries} attempts, skipping")
                 continue
             
-            # Get seed track name for display (for alternative modes)
-            if generation_mode != 'liked_songs':
-                try:
-                    seed_track_info = safe_spotify_call(sp.track, seed_track_id)
-                    if seed_track_info:
-                        winner_name = seed_track_info['artists'][0]['name']
-                    else:
-                        winner_name = "Unknown Artist"
-                except Exception as e:
-                    print(f"[WARN] Could not fetch seed track info: {e}")
-                    winner_name = "Unknown Artist"
+            print(f"[INFO] ✅ Seed track confirmed in database, proceeding with similarity search (seed {idx+1}/{max_songs})...")
             
-            # Get seed artist genres for validation (live fetch - no database)
-            seed_genres = get_artist_genres_live(sp, winner_name)
-            print(f"[INFO] Seed artist '{winner_name}' genres: {seed_genres}")
-            
-            # Get audio features for seed track from database
+            # Step 3: Get audio features for seed track from database (no API calls needed)
+            print(f"[DB QUERY] Fetching audio features for seed track from database...")
+            query_start = time.time()
             try:
                 with conn.cursor() as cursor:
                     cursor.execute(
@@ -2583,6 +2663,9 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                         (seed_track_id,)
                     )
                     row = cursor.fetchone()
+                    query_time = time.time() - query_start
+                    print(f"[DB QUERY] Features query completed in {query_time:.2f}s")
+                    
                     if not row:
                         # This should not happen since we just ensured it's in the DB
                         print(f"[ERROR] Seed track {seed_track_id} still not in database after processing!")
@@ -2596,17 +2679,22 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                         'energy': row[12], 'danceability': row[13], 'valence': row[14],
                         'acousticness': row[15], 'instrumentalness': row[16]
                     }
+                    print(f"[DB QUERY] ✅ Retrieved audio features successfully")
             except Exception as e:
                 print(f"[ERROR] Database error: {e}")
                 continue
             
             # Find similar tracks from database
+            print(f"[DB QUERY] Searching for similar tracks (max 200 results, excluding {len(all_excluded_track_ids)} tracks)...")
+            similarity_start = time.time()
             similar_tracks = find_most_similar_track_in_db(
                 conn, 
                 features, 
                 liked_track_ids=list(all_excluded_track_ids), 
                 max_results=200  # Get many candidates for genre matching
             )
+            similarity_time = time.time() - similarity_start
+            print(f"[DB QUERY] Similarity search completed in {similarity_time:.2f}s - found {len(similar_tracks)} candidates")
             
             if not similar_tracks:
                 print(f"[WARN] No similar tracks found in database for {winner_name}")
@@ -2696,45 +2784,26 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                     if strict_common_limit:
                         print(f"  → Enforcing max {max_common_genres} common genre per match (ideally 2 niche + 1 common)")
                     
-                    for candidate in similar_tracks:
+                    for candidate_index, candidate in enumerate(similar_tracks):
                         if track_found:
                             break
                         
                         candidate_id = candidate['id']
+                        candidate_artist_name = candidate['artist_name']  # Already in DB result
+                        
+                        print(f"\n[TRACK {candidate_index + 1}/{len(similar_tracks)}] Checking track by {candidate_artist_name}")
+                        
                         if candidate_id in all_excluded_track_ids:
+                            print(f"  [SKIP] Already excluded")
                             continue
                         
-                        candidate_track = safe_spotify_call(sp.track, candidate_id)
-                        if not candidate_track:
-                            continue
-                        
-                        candidate_artist_ids = {a['id'] for a in candidate_track['artists']}
-                        
-                        # Basic validation
-                        if generation_mode == 'liked_songs':
-                            if winner_aid in candidate_artist_ids:
-                                continue
-                        else:
-                            if candidate_artist_ids & seed_artist_ids:
-                                continue
-                        
-                        if generation_mode == 'liked_songs' and candidate_artist_ids & liked_songs_artist_ids:
-                            continue
-                        
-                        if candidate_artist_ids & seen_artist_ids:
-                            continue
-                        
-                        if max_follower_count is not None:
-                            main_artist_id = candidate_track['artists'][0]['id']
-                            main_artist_profile = safe_spotify_call(sp.artist, main_artist_id)
-                            if main_artist_profile and 'followers' in main_artist_profile:
-                                follower_count = main_artist_profile['followers'].get('total', 0)
-                                if follower_count > max_follower_count:
-                                    continue
-                        
-                        # Genre check: Use genre pool with common genre limiting
-                        candidate_artist_name = candidate_track['artists'][0]['name']
+                        # Fetch genres (checks DB first, then APIs if needed, and caches result)
                         candidate_genres = get_artist_genres_live(sp, candidate_artist_name)
+                        
+                        # Compare against genre pool
+                        print(f"[GENRE COMPARE] Candidate genres: {candidate_genres}")
+                        print(f"[GENRE COMPARE] Genre pool: {genre_pool[:10]}{'...' if len(genre_pool) > 10 else ''}")
+                        
                         genre_match, matched_genres = check_genre_match(
                             genre_pool, 
                             candidate_genres, 
@@ -2743,23 +2812,66 @@ def run_enhanced_recommendation_script(sp, output_playlist_id, max_songs=10, las
                             strict_mode=strict_common_limit
                         )
                         
-                        if genre_match:
-                            print(f"[MATCH] ✓ Found {len(matched_genres)} genre matches (required {min_required_matches}): {matched_genres[:5]}")
-                            selected_tracks.append(candidate_track)
-                            all_excluded_track_ids.add(candidate_id)
-                            seen_artist_ids.update(candidate_artist_ids)
-                            added_songs.append({
-                                'title': candidate_track['name'],
-                                'artist': ', '.join([a['name'] for a in candidate_track['artists']]),
-                                'spotify_url': candidate_track['external_urls']['spotify'],
-                                'based_on_artist': winner_name,
-                                'genres': matched_genres[:3]
-                            })
-                            print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (based on {winner_name}, distance: {candidate['similarity_distance']:.4f})")
-                            print(f"[INFO] Matched genres: {matched_genres[:3]}")
-                            print(f"[PROGRESS] {len(selected_tracks)}/{max_songs} tracks selected")
-                            track_found = True
-                            break
+                        if not genre_match:
+                            print(f"  [SKIP] Genre match failed")
+                            continue
+                        
+                        # Genre match passed! Now fetch full track from Spotify for final validation
+                        print(f"[MATCH] ✓ Found {len(matched_genres)} genre matches (required {min_required_matches}): {matched_genres[:5]}")
+                        print(f"  [INFO] Fetching full track details from Spotify...")
+                        
+                        candidate_track = safe_spotify_call(sp.track, candidate_id)
+                        if not candidate_track:
+                            print(f"  [SKIP] Failed to fetch track from Spotify")
+                            continue
+                        
+                        print(f"  [SPOTIFY] ✓ Track fetched: '{candidate_track['name']}' by {candidate_track['artists'][0]['name']}")
+                        
+                        candidate_artist_ids = {a['id'] for a in candidate_track['artists']}
+                        
+                        # Basic validation
+                        if generation_mode == 'liked_songs':
+                            if winner_aid in candidate_artist_ids:
+                                print(f"  [SKIP] Artist is the seed artist")
+                                continue
+                        else:
+                            if candidate_artist_ids & seed_artist_ids:
+                                print(f"  [SKIP] Artist is in seed artist list")
+                                continue
+                        
+                        if generation_mode == 'liked_songs' and candidate_artist_ids & liked_songs_artist_ids:
+                            print(f"  [SKIP] Artist in liked songs")
+                            continue
+                        
+                        if candidate_artist_ids & seen_artist_ids:
+                            print(f"  [SKIP] Artist already used")
+                            continue
+                        
+                        if max_follower_count is not None:
+                            main_artist_id = candidate_track['artists'][0]['id']
+                            main_artist_profile = safe_spotify_call(sp.artist, main_artist_id)
+                            if main_artist_profile and 'followers' in main_artist_profile:
+                                follower_count = main_artist_profile['followers'].get('total', 0)
+                                if follower_count > max_follower_count:
+                                    print(f"  [SKIP] Artist has {follower_count:,} followers (max: {max_follower_count:,})")
+                                    continue
+                        
+                        # All validation passed!
+                        selected_tracks.append(candidate_track)
+                        all_excluded_track_ids.add(candidate_id)
+                        seen_artist_ids.update(candidate_artist_ids)
+                        added_songs.append({
+                            'title': candidate_track['name'],
+                            'artist': ', '.join([a['name'] for a in candidate_track['artists']]),
+                            'spotify_url': candidate_track['external_urls']['spotify'],
+                            'based_on_artist': winner_name if generation_mode == 'liked_songs' else source_description,
+                            'genres': matched_genres[:3]
+                        })
+                        print(f"[SUCCESS] ✓ Selected: {candidate_track['name']} by {candidate_track['artists'][0]['name']} (distance: {candidate['similarity_distance']:.4f})")
+                        print(f"[INFO] Matched genres: {matched_genres[:3]}")
+                        print(f"[PROGRESS] {len(selected_tracks)}/{max_songs} tracks selected")
+                        track_found = True
+                        break
                     
                     # If no match found, move to next seed
                     if not track_found:
